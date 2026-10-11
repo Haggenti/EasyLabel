@@ -8,6 +8,7 @@ import tempfile
 import os
 import math
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -93,21 +94,62 @@ class EnvelopeLayout:
     recipient_font_size: float = 14
     recipient_bold: bool = True
     recipient_italic: bool = False
+    sender_alignment: str = "center"
+    recipient_alignment: str = "center"
+    postal_code_enabled: bool = False
+    postal_code_x: float = 20
+    postal_code_y: float = 78
+    postal_code_width: float = 60
+    postal_code_height: float = 16
+
+
+def alignment_flag(value: str, vertical: Qt.AlignmentFlag) -> Qt.AlignmentFlag:
+    horizontal = {
+        "left": Qt.AlignmentFlag.AlignLeft,
+        "right": Qt.AlignmentFlag.AlignRight,
+    }.get(value, Qt.AlignmentFlag.AlignHCenter)
+    return horizontal | vertical
+
+
+def format_recipient_text(recipient, include_postal: bool = True) -> str:
+    values = [recipient.name, recipient.address]
+    if include_postal:
+        values.append(f"{recipient.postal_code} {recipient.city}")
+    else:
+        values.append(recipient.city)
+    return "\n".join(value for value in values if value)
+
+
+def remove_postal_code_from_text(text: str, postal_code: str) -> str:
+    digits = "".join(character for character in postal_code if character.isdigit())
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(digits) and (len(stripped) == len(digits)
+                                            or stripped[len(digits)].isspace()):
+            remainder = stripped[len(digits):].strip()
+            if remainder:
+                lines.append(remainder)
+            continue
+        lines.append(line)
+    return "\n".join(line for line in lines if line.strip())
 
 
 class EnvelopeCanvas(QWidget):
     def __init__(self, layout: EnvelopeLayout, sender_text: str = "Expéditeur",
-                 recipient_text: str = "Destinataire", parent: QWidget | None = None):
+                 recipient_text: str = "Destinataire", postal_code_text: str = "00000",
+                 parent: QWidget | None = None):
         super().__init__(parent)
         self.layout_data = layout
         self.sender_text = sender_text
         self.recipient_text = recipient_text
+        self.postal_code_text = postal_code_text
         self.active = ""
         self.drag_mode = ""
         self.drag_start = None
         self.original_offset = (0.0, 0.0)
         self.original_size = (0.0, 0.0)
-        self.setMinimumSize(640, 360)
+        self.setMinimumSize(700, 400)
 
     def scale_and_page(self) -> tuple[float, QRectF]:
         scale = min((self.width() - 80) / self.layout_data.page_width,
@@ -129,6 +171,19 @@ class EnvelopeCanvas(QWidget):
         rect = self.rect_for(element)
         return QRectF(rect.right() - 8, rect.bottom() - 8, 16, 16)
 
+    def draw_postal_code(self, painter: QPainter, rect: QRectF) -> None:
+        postal_code = "".join(character for character in self.postal_code_text if character.isdigit())
+        if not postal_code:
+            return
+        cell_width = rect.width() / len(postal_code)
+        for index, character in enumerate(postal_code):
+            cell = QRectF(rect.left() + index * cell_width, rect.top(), cell_width, rect.height())
+            painter.drawText(
+                cell.adjusted(2, 2, -2, -2),
+                Qt.AlignmentFlag.AlignCenter,
+                character,
+            )
+
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
@@ -137,8 +192,13 @@ class EnvelopeCanvas(QWidget):
         painter.fillRect(page, Qt.GlobalColor.white)
         painter.setPen(QPen(Qt.GlobalColor.darkGray, 1))
         painter.drawRect(page)
+        recipient_text = self.recipient_text
+        if self.layout_data.postal_code_enabled:
+            recipient_text = remove_postal_code_from_text(
+                recipient_text, self.postal_code_text
+            )
         for element, color, text in (("sender", Qt.GlobalColor.darkBlue, self.sender_text),
-                                     ("recipient", Qt.GlobalColor.darkGreen, self.recipient_text)):
+                                     ("recipient", Qt.GlobalColor.darkGreen, recipient_text)):
             if element == "sender" and not self.layout_data.sender_enabled:
                 continue
             rect = self.rect_for(element)
@@ -152,12 +212,30 @@ class EnvelopeCanvas(QWidget):
             font.setBold(getattr(self.layout_data, f"{element}_bold"))
             font.setItalic(getattr(self.layout_data, f"{element}_italic"))
             painter.setFont(font)
-            painter.drawText(rect.adjusted(3, 3, -3, -3),
-                             Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
+            painter.drawText(
+                rect.adjusted(3, 3, -3, -3),
+                alignment_flag(
+                    getattr(self.layout_data, f"{element}_alignment"),
+                    Qt.AlignmentFlag.AlignVCenter,
+                ) | Qt.TextFlag.TextWordWrap,
+                text,
+            )
+        if self.layout_data.postal_code_enabled:
+            rect = self.rect_for("postal_code")
+            painter.setPen(QPen(Qt.GlobalColor.darkRed, 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect)
+            painter.setBrush(Qt.GlobalColor.darkRed)
+            painter.drawRect(self.handle_rect("postal_code"))
+            painter.setPen(Qt.GlobalColor.darkRed)
+            self.draw_postal_code(painter, rect)
         del scale
 
     def mousePressEvent(self, event) -> None:
-        for element in ("recipient", "sender"):
+        elements = ("postal_code", "recipient", "sender")
+        for element in elements:
+            if element == "postal_code" and not self.layout_data.postal_code_enabled:
+                continue
             if element == "sender" and not self.layout_data.sender_enabled:
                 continue
             if self.handle_rect(element).contains(event.position()):
@@ -169,7 +247,9 @@ class EnvelopeCanvas(QWidget):
                 self.original_size = (getattr(self.layout_data, f"{element}_width"),
                                       getattr(self.layout_data, f"{element}_height"))
                 return
-        for element in ("recipient", "sender"):
+        for element in elements:
+            if element == "postal_code" and not self.layout_data.postal_code_enabled:
+                continue
             if element == "sender" and not self.layout_data.sender_enabled:
                 continue
             if self.rect_for(element).contains(event.position()):
@@ -226,6 +306,23 @@ def fit_font(text: str, rect: QRectF, base_size: int = 15, minimum_size: int = 9
     return font, False
 
 
+def draw_postal_code(painter: QPainter, rect: QRectF, postal_code: str,
+                     font: QFont, draw_guides: bool = False) -> None:
+    digits = "".join(character for character in postal_code if character.isdigit())
+    if not digits:
+        return
+    cell_width = rect.width() / len(digits)
+    painter.setFont(font)
+    for index, digit in enumerate(digits):
+        cell = QRectF(rect.left() + index * cell_width, rect.top(), cell_width, rect.height())
+        if draw_guides:
+            painter.save()
+            painter.setPen(QPen(Qt.GlobalColor.gray, 0.5, Qt.PenStyle.DashLine))
+            painter.drawRect(cell)
+            painter.restore()
+        painter.drawText(cell, Qt.AlignmentFlag.AlignCenter, digit)
+
+
 def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, rows: int,
                margin_left: float, margin_top: float, gap_x: float, gap_y: float,
                start_column: int = 1, start_row: int = 1,
@@ -240,7 +337,8 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
                sender_bold: bool = True, sender_italic: bool = False,
                recipient_font_family: str = "DejaVu Sans", recipient_font_size: float = 15,
                recipient_bold: bool = True, recipient_italic: bool = False,
-               recipient_min_size: float = 6, sender_enabled: bool = True) -> RenderStats:
+               recipient_min_size: float = 6, sender_enabled: bool = True,
+               sender_alignment: str = "center", recipient_alignment: str = "center") -> RenderStats:
     writer = QPdfWriter(str(output_path))
     writer.setPageSize(QPageSize(QSizeF(page_width, page_height), QPageSize.Unit.Millimeter))
     writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter)
@@ -292,7 +390,7 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
                 )
                 if sender_was_reduced:
                     stats.reduced += 1
-                sender_flags = (Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+                sender_flags = (alignment_flag(sender_alignment, Qt.AlignmentFlag.AlignTop)
                                 | Qt.TextFlag.TextWordWrap)
                 sender_bounds = QFontMetricsF(sender_font).boundingRect(
                     sender_rect, int(sender_flags), sender_text
@@ -302,17 +400,14 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
                 painter.setFont(sender_font)
                 painter.drawText(sender_rect, sender_flags, sender_text)
 
-            recipient_text = "\n".join(
-                value for value in (recipient.name, recipient.address,
-                                    f"{recipient.postal_code} {recipient.city}") if value
-            )
+            recipient_text = format_recipient_text(recipient)
             recipient_font, was_reduced = fit_font(
                 recipient_text, recipient_rect, int(recipient_font_size), int(recipient_min_size),
                 recipient_font_family, recipient_bold, recipient_italic
             )
             if was_reduced:
                 stats.reduced += 1
-            text_flags = (Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+            text_flags = (alignment_flag(recipient_alignment, Qt.AlignmentFlag.AlignVCenter)
                           | Qt.TextFlag.TextWordWrap)
             bounds = QFontMetricsF(recipient_font).boundingRect(
                 recipient_rect, int(text_flags), recipient_text
@@ -338,7 +433,11 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                         sender_font_family: str = "DejaVu Sans", sender_font_size: float = 8,
                         sender_bold: bool = True, sender_italic: bool = False,
                         recipient_font_family: str = "DejaVu Sans", recipient_font_size: float = 14,
-                        recipient_bold: bool = True, recipient_italic: bool = False) -> RenderStats:
+                        recipient_bold: bool = True, recipient_italic: bool = False,
+                        sender_alignment: str = "center", recipient_alignment: str = "center",
+                        postal_code_enabled: bool = False, postal_code_x: float = 20,
+                        postal_code_y: float = 78, postal_code_width: float = 60,
+                        postal_code_height: float = 16) -> RenderStats:
     width_mm, height_mm = envelope_size
     writer = QPdfWriter(str(output_path))
     writer.setPageSize(QPageSize(QSizeF(width_mm, height_mm), QPageSize.Unit.Millimeter))
@@ -365,7 +464,7 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                     stats.reduced += 1
                 painter.setFont(sender_font)
                 painter.drawText(sender_rect,
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                                 alignment_flag(sender_alignment, Qt.AlignmentFlag.AlignTop)
                                  | Qt.TextFlag.TextWordWrap, sender_text)
 
             recipient_rect = QRectF(mm(recipient_x), mm(recipient_y),
@@ -376,17 +475,14 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                 painter.drawRect(QRectF(0, 0, mm(width_mm), mm(height_mm)))
                 painter.drawRect(recipient_rect)
                 painter.restore()
-            recipient_text = "\n".join(
-                value for value in (recipient.name, recipient.address,
-                                    f"{recipient.postal_code} {recipient.city}") if value
-            )
+            recipient_text = format_recipient_text(recipient, not postal_code_enabled)
             recipient_font, was_reduced = fit_font(
                 recipient_text, recipient_rect, int(recipient_font_size), 4,
                 recipient_font_family, recipient_bold, recipient_italic
             )
             if was_reduced:
                 stats.reduced += 1
-            text_flags = (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            text_flags = (alignment_flag(recipient_alignment, Qt.AlignmentFlag.AlignVCenter)
                           | Qt.TextFlag.TextWordWrap)
             bounds = QFontMetricsF(recipient_font).boundingRect(
                 recipient_rect, int(text_flags), recipient_text
@@ -395,6 +491,12 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                 stats.overflow += 1
             painter.setFont(recipient_font)
             painter.drawText(recipient_rect, text_flags, recipient_text)
+            if postal_code_enabled:
+                postal_rect = QRectF(mm(postal_code_x), mm(postal_code_y),
+                                     mm(postal_code_width), mm(postal_code_height))
+                postal_font = QFont(recipient_font)
+                postal_code = recipient.postal_code
+                draw_postal_code(painter, postal_rect, postal_code, postal_font, show_guides)
             stats.labels += 1
 
     painter.end()
@@ -403,10 +505,11 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
 
 class EnvelopeEditorDialog(QDialog):
     def __init__(self, layout_data: EnvelopeLayout, sender_text: str = "Expéditeur",
-                 recipient_text: str = "Destinataire", parent: QWidget | None = None):
+                 recipient_text: str = "Destinataire", parent: QWidget | None = None,
+                 postal_code_text: str = "00000"):
         super().__init__(parent)
         self.setWindowTitle("Ajuster l’enveloppe")
-        self.resize(760, 560)
+        self.resize(820, 620)
         self.layout_data = layout_data
         self.page_width = self.number(layout_data.page_width, 80, 500)
         self.page_height = self.number(layout_data.page_height, 50, 300)
@@ -421,6 +524,7 @@ class EnvelopeEditorDialog(QDialog):
         self.sender_bold.setChecked(layout_data.sender_bold)
         self.sender_italic = QCheckBox("Italique")
         self.sender_italic.setChecked(layout_data.sender_italic)
+        self.sender_alignment = self._alignment(layout_data.sender_alignment)
         self.recipient_font = QFontComboBox()
         self.recipient_font.setCurrentFont(QFont(layout_data.recipient_font_family))
         self.recipient_size = self.number(layout_data.recipient_font_size, 4, 40)
@@ -428,16 +532,24 @@ class EnvelopeEditorDialog(QDialog):
         self.recipient_bold.setChecked(layout_data.recipient_bold)
         self.recipient_italic = QCheckBox("Italique")
         self.recipient_italic.setChecked(layout_data.recipient_italic)
+        self.recipient_alignment = self._alignment(layout_data.recipient_alignment)
+        self.postal_code_enabled = QCheckBox("Afficher le code postal dans des cases")
+        self.postal_code_enabled.setChecked(layout_data.postal_code_enabled)
         for control in (self.sender_enabled, self.sender_font, self.sender_size, self.sender_bold,
-                        self.sender_italic, self.recipient_font, self.recipient_size,
-                        self.recipient_bold, self.recipient_italic):
+                self.sender_italic, self.sender_alignment, self.recipient_font,
+                self.recipient_size, self.recipient_bold, self.recipient_italic,
+            self.recipient_alignment, self.postal_code_enabled):
             if hasattr(control, "valueChanged"):
                 control.valueChanged.connect(self.update_typography)
             if hasattr(control, "currentFontChanged"):
                 control.currentFontChanged.connect(self.update_typography)
+            if hasattr(control, "currentIndexChanged"):
+                control.currentIndexChanged.connect(self.update_typography)
             if hasattr(control, "stateChanged"):
                 control.stateChanged.connect(self.update_typography)
-        self.canvas = EnvelopeCanvas(layout_data, sender_text, recipient_text, self)
+        self.canvas = EnvelopeCanvas(
+            layout_data, sender_text, recipient_text, postal_code_text, self
+        )
 
         settings = QGridLayout()
         settings.addWidget(QLabel("Largeur enveloppe (mm)"), 0, 0)
@@ -450,6 +562,7 @@ class EnvelopeEditorDialog(QDialog):
         sender_style.addWidget(self.sender_size)
         sender_style.addWidget(self.sender_bold)
         sender_style.addWidget(self.sender_italic)
+        sender_style.addWidget(self.sender_alignment)
         settings.addLayout(sender_style, 1, 2, 1, 2)
         settings.addWidget(self.sender_enabled, 2, 0, 1, 4)
         settings.addWidget(QLabel("Police destinataire"), 3, 0)
@@ -458,7 +571,9 @@ class EnvelopeEditorDialog(QDialog):
         recipient_style.addWidget(self.recipient_size)
         recipient_style.addWidget(self.recipient_bold)
         recipient_style.addWidget(self.recipient_italic)
+        recipient_style.addWidget(self.recipient_alignment)
         settings.addLayout(recipient_style, 3, 2, 1, 2)
+        settings.addWidget(self.postal_code_enabled, 4, 0, 1, 4)
         instructions = QLabel("Faites glisser les blocs ou leur poignée pour les ajuster.")
         reset_button = QPushButton("Réinitialiser")
         reset_button.clicked.connect(self.reset_layout)
@@ -486,6 +601,15 @@ class EnvelopeEditorDialog(QDialog):
         control.setValue(value)
         return control
 
+    @staticmethod
+    def _alignment(value: str) -> QComboBox:
+        control = QComboBox()
+        for label, data in (("Gauche", "left"), ("Centré", "center"), ("Droite", "right")):
+            control.addItem(label, data)
+        index = control.findData(value)
+        control.setCurrentIndex(index if index >= 0 else 1)
+        return control
+
     def update_page(self) -> None:
         self.layout_data.page_width = self.page_width.value()
         self.layout_data.page_height = self.page_height.value()
@@ -497,10 +621,13 @@ class EnvelopeEditorDialog(QDialog):
         self.layout_data.sender_font_size = self.sender_size.value()
         self.layout_data.sender_bold = self.sender_bold.isChecked()
         self.layout_data.sender_italic = self.sender_italic.isChecked()
+        self.layout_data.sender_alignment = self.sender_alignment.currentData()
         self.layout_data.recipient_font_family = self.recipient_font.currentFont().family()
         self.layout_data.recipient_font_size = self.recipient_size.value()
         self.layout_data.recipient_bold = self.recipient_bold.isChecked()
         self.layout_data.recipient_italic = self.recipient_italic.isChecked()
+        self.layout_data.recipient_alignment = self.recipient_alignment.currentData()
+        self.layout_data.postal_code_enabled = self.postal_code_enabled.isChecked()
         self.canvas.update()
 
     def reset_layout(self) -> None:
@@ -518,32 +645,39 @@ class EnvelopeEditorDialog(QDialog):
         self.layout_data.sender_font_size = defaults.sender_font_size
         self.layout_data.sender_bold = defaults.sender_bold
         self.layout_data.sender_italic = defaults.sender_italic
+        self.layout_data.sender_alignment = defaults.sender_alignment
         self.layout_data.recipient_font_family = defaults.recipient_font_family
         self.layout_data.recipient_font_size = defaults.recipient_font_size
         self.layout_data.recipient_bold = defaults.recipient_bold
         self.layout_data.recipient_italic = defaults.recipient_italic
+        self.layout_data.recipient_alignment = defaults.recipient_alignment
+        self.layout_data.postal_code_enabled = defaults.postal_code_enabled
         self.sender_enabled.setChecked(defaults.sender_enabled)
         self.sender_font.setCurrentFont(QFont(defaults.sender_font_family))
         self.sender_size.setValue(defaults.sender_font_size)
         self.sender_bold.setChecked(defaults.sender_bold)
         self.sender_italic.setChecked(defaults.sender_italic)
+        self.sender_alignment.setCurrentIndex(self.sender_alignment.findData(defaults.sender_alignment))
         self.recipient_font.setCurrentFont(QFont(defaults.recipient_font_family))
         self.recipient_size.setValue(defaults.recipient_font_size)
         self.recipient_bold.setChecked(defaults.recipient_bold)
         self.recipient_italic.setChecked(defaults.recipient_italic)
+        self.recipient_alignment.setCurrentIndex(self.recipient_alignment.findData(defaults.recipient_alignment))
+        self.postal_code_enabled.setChecked(defaults.postal_code_enabled)
         self.canvas.update()
 
 
 class EnvelopeFormatDialog(QDialog):
     def __init__(self, formats: dict[str, dict], active_name: str,
                  sender_text: str = "Expéditeur", recipient_text: str = "Destinataire",
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, postal_code_text: str = "00000"):
         super().__init__(parent)
         self.setWindowTitle("Formats d'enveloppes")
         self.resize(560, 420)
         self.formats = json.loads(json.dumps(formats))
         self.sender_text = sender_text
         self.recipient_text = recipient_text
+        self.postal_code_text = postal_code_text
         self.active_name = active_name
         self.current_layout = EnvelopeLayout()
 
@@ -606,8 +740,10 @@ class EnvelopeFormatDialog(QDialog):
 
     def edit_format(self) -> None:
         edited_layout = EnvelopeLayout(**asdict(self.current_layout))
-        dialog = EnvelopeEditorDialog(edited_layout, self.sender_text,
-                                      self.recipient_text, self)
+        dialog = EnvelopeEditorDialog(
+            edited_layout, self.sender_text, self.recipient_text, self,
+            self.postal_code_text
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.current_layout = dialog.layout_data
 
@@ -629,6 +765,70 @@ class EnvelopeFormatDialog(QDialog):
     def format_result(self) -> tuple[str, EnvelopeLayout, dict[str, dict]]:
         self.save_format()
         return self.active_name, self.current_layout, self.formats
+
+
+class PrintOptionsDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Options d'impression")
+        self.copies = QSpinBox()
+        self.copies.setRange(1, 99)
+        self.page_range = QLineEdit()
+        self.page_range.setPlaceholderText("Toutes les pages")
+        self.test_page = QCheckBox("Imprimer une page de test avec les contours")
+        self.test_page.toggled.connect(self.update_test_page)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("Nombre de copies"), 0, 0)
+        grid.addWidget(self.copies, 0, 1)
+        grid.addWidget(QLabel("Pages à imprimer"), 1, 0)
+        grid.addWidget(self.page_range, 1, 1)
+        grid.addWidget(self.test_page, 2, 0, 1, 2)
+        cancel_button = QPushButton("Annuler")
+        cancel_button.clicked.connect(self.reject)
+        print_button = QPushButton("Imprimer")
+        print_button.clicked.connect(self.validate_and_accept)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(print_button)
+        layout = QVBoxLayout(self)
+        layout.addLayout(grid)
+        layout.addLayout(buttons)
+
+    def update_test_page(self, checked: bool) -> None:
+        self.page_range.setEnabled(not checked)
+        if checked:
+            self.page_range.clear()
+
+    def validate_and_accept(self) -> None:
+        if self.test_page.isChecked() or self.parse_page_range(self.page_range.text()) is not None:
+            self.accept()
+            return
+        QMessageBox.warning(
+            self, "Plage de pages invalide",
+            "Utilisez par exemple : 1, 2-4 ou 1,3,5."
+        )
+
+    @staticmethod
+    def parse_page_range(value: str) -> list[int] | None:
+        value = value.strip()
+        if not value:
+            return []
+        pages: set[int] = set()
+        for part in value.split(","):
+            part = part.strip()
+            if re.fullmatch(r"[1-9][0-9]*", part):
+                pages.add(int(part))
+                continue
+            match = re.fullmatch(r"([1-9][0-9]*)\s*-\s*([1-9][0-9]*)", part)
+            if not match:
+                return None
+            start, end = (int(group) for group in match.groups())
+            if start > end:
+                return None
+            pages.update(range(start, end + 1))
+        return sorted(pages)
 
 
 class LabelWindow(QMainWindow):
@@ -668,10 +868,12 @@ class LabelWindow(QMainWindow):
         self.sender_font_size = 9.0
         self.sender_bold = True
         self.sender_italic = False
+        self.sender_alignment = "center"
         self.recipient_font_family = "DejaVu Sans"
         self.recipient_font_size = 15.0
         self.recipient_bold = True
         self.recipient_italic = False
+        self.recipient_alignment = "center"
         self.format_storage_path = self.directory / "formats.json"
         self.available_formats = load_formats(self.format_storage_path)
         self.preset_info = QLabel()
@@ -718,10 +920,17 @@ class LabelWindow(QMainWindow):
         self.envelope_sender_font_size = 8.0
         self.envelope_sender_bold = True
         self.envelope_sender_italic = False
+        self.envelope_sender_alignment = "center"
         self.envelope_recipient_font_family = "DejaVu Sans"
         self.envelope_recipient_font_size = 14.0
         self.envelope_recipient_bold = True
         self.envelope_recipient_italic = False
+        self.envelope_recipient_alignment = "center"
+        self.envelope_postal_code_enabled = False
+        self.envelope_postal_code_x = 20.0
+        self.envelope_postal_code_y = 78.0
+        self.envelope_postal_code_width = 60.0
+        self.envelope_postal_code_height = 16.0
         self.printers = QComboBox()
         self.load_printers()
 
@@ -739,7 +948,7 @@ class LabelWindow(QMainWindow):
         self.directory_action = file_menu.addAction(str(self.directory))
         self.directory_action.setEnabled(False)
 
-        layout_menu = self.menuBar().addMenu("Mise en page")
+        mode_menu = self.menuBar().addMenu("Mode")
         mode_group = QActionGroup(self)
         self.label_mode_action = QAction("Planche d'étiquettes", self)
         self.label_mode_action.setCheckable(True)
@@ -749,14 +958,15 @@ class LabelWindow(QMainWindow):
         self.envelope_mode_action.triggered.connect(lambda: self.mode.setCurrentIndex(1))
         mode_group.addAction(self.label_mode_action)
         mode_group.addAction(self.envelope_mode_action)
-        layout_menu.addAction(self.label_mode_action)
-        layout_menu.addAction(self.envelope_mode_action)
-        layout_menu.addSeparator()
+        mode_menu.addAction(self.label_mode_action)
+        mode_menu.addAction(self.envelope_mode_action)
+
+        layout_menu = self.menuBar().addMenu("Mise en page")
         self.format_action = layout_menu.addAction("Formats...")
         self.format_action.triggered.connect(self.open_format_settings)
         self.options_action = layout_menu.addAction("Options...")
         self.options_action.triggered.connect(self.open_layout_options)
-        layout_menu.addSeparator()
+        self.envelope_layout_separator = layout_menu.addSeparator()
         self.envelope_format_menu = layout_menu.addMenu("Format enveloppe")
         self.envelope_format_actions = []
         for index in range(self.envelope_format.count()):
@@ -841,6 +1051,11 @@ class LabelWindow(QMainWindow):
                 recipient_y=52, recipient_width=95, recipient_height=80,
             )),
         }
+        default_fields = asdict(EnvelopeLayout())
+        required_fields = set(default_fields) - {
+            "sender_alignment", "recipient_alignment", "postal_code_enabled",
+            "postal_code_x", "postal_code_y", "postal_code_width", "postal_code_height",
+        }
         saved = self.settings.value("envelope_formats", "")
         if saved:
             try:
@@ -849,11 +1064,12 @@ class LabelWindow(QMainWindow):
                     for name, data in values.items():
                         if not isinstance(name, str) or not isinstance(data, dict):
                             continue
-                        required_fields = EnvelopeLayout.__dataclass_fields__
-                        if not set(required_fields).issubset(data):
+                        if not required_fields.issubset(data):
                             continue
                         try:
-                            defaults[name] = asdict(EnvelopeLayout(**data))
+                            defaults[name] = asdict(
+                                EnvelopeLayout(**{**default_fields, **data})
+                            )
                         except (TypeError, ValueError):
                             continue
             except (TypeError, json.JSONDecodeError):
@@ -995,6 +1211,7 @@ class LabelWindow(QMainWindow):
         self.envelope_mode_action.setChecked(is_envelope)
         self.format_action.setVisible(not is_envelope)
         self.options_action.setVisible(not is_envelope)
+        self.envelope_layout_separator.setVisible(is_envelope)
         self.envelope_format_menu.menuAction().setVisible(is_envelope)
         self.envelope_formats_action.setVisible(is_envelope)
         for index, action in enumerate(self.envelope_format_actions):
@@ -1056,7 +1273,8 @@ class LabelWindow(QMainWindow):
         values = self.envelope_presets.get(name)
         if values is None:
             return
-        layout_data = EnvelopeLayout(**values)
+        defaults = asdict(EnvelopeLayout())
+        layout_data = EnvelopeLayout(**{**defaults, **values})
         self.envelope_preset_name = name
         self.settings.setValue("envelope_preset", name)
         self.envelope_page_width = layout_data.page_width
@@ -1070,10 +1288,17 @@ class LabelWindow(QMainWindow):
         self.envelope_sender_font_size = layout_data.sender_font_size
         self.envelope_sender_bold = layout_data.sender_bold
         self.envelope_sender_italic = layout_data.sender_italic
+        self.envelope_sender_alignment = layout_data.sender_alignment
         self.envelope_recipient_font_family = layout_data.recipient_font_family
         self.envelope_recipient_font_size = layout_data.recipient_font_size
         self.envelope_recipient_bold = layout_data.recipient_bold
         self.envelope_recipient_italic = layout_data.recipient_italic
+        self.envelope_recipient_alignment = layout_data.recipient_alignment
+        self.envelope_postal_code_enabled = layout_data.postal_code_enabled
+        self.envelope_postal_code_x = layout_data.postal_code_x
+        self.envelope_postal_code_y = layout_data.postal_code_y
+        self.envelope_postal_code_width = layout_data.postal_code_width
+        self.envelope_postal_code_height = layout_data.postal_code_height
         self.envelope_x.setMaximum(max(220, round(layout_data.page_width)))
         self.envelope_y.setMaximum(max(162, round(layout_data.page_height)))
         self.envelope_width.setMaximum(max(220, round(layout_data.page_width)))
@@ -1109,7 +1334,8 @@ class LabelWindow(QMainWindow):
     def open_envelope_formats(self) -> None:
         dialog = EnvelopeFormatDialog(
             self.envelope_presets, self.envelope_preset_name,
-            self._sample_sender(), self._sample_recipient(), self
+            self._sample_sender(), self._sample_recipient(), self,
+            self._sample_postal_code()
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1132,7 +1358,8 @@ class LabelWindow(QMainWindow):
         if not saved_layout:
             return
         try:
-            layout_data = EnvelopeLayout(**json.loads(saved_layout))
+            values = json.loads(saved_layout)
+            layout_data = EnvelopeLayout(**{**asdict(EnvelopeLayout()), **values})
         except (TypeError, ValueError, json.JSONDecodeError):
             return
         self.envelope_x.setMaximum(max(220, round(layout_data.page_width)))
@@ -1150,10 +1377,17 @@ class LabelWindow(QMainWindow):
         self.envelope_sender_font_size = layout_data.sender_font_size
         self.envelope_sender_bold = layout_data.sender_bold
         self.envelope_sender_italic = layout_data.sender_italic
+        self.envelope_sender_alignment = layout_data.sender_alignment
         self.envelope_recipient_font_family = layout_data.recipient_font_family
         self.envelope_recipient_font_size = layout_data.recipient_font_size
         self.envelope_recipient_bold = layout_data.recipient_bold
         self.envelope_recipient_italic = layout_data.recipient_italic
+        self.envelope_recipient_alignment = layout_data.recipient_alignment
+        self.envelope_postal_code_enabled = layout_data.postal_code_enabled
+        self.envelope_postal_code_x = layout_data.postal_code_x
+        self.envelope_postal_code_y = layout_data.postal_code_y
+        self.envelope_postal_code_width = layout_data.postal_code_width
+        self.envelope_postal_code_height = layout_data.postal_code_height
         self.envelope_x.setValue(round(layout_data.recipient_x))
         self.envelope_y.setValue(round(layout_data.recipient_y))
         self.envelope_width.setValue(round(layout_data.recipient_width))
@@ -1175,6 +1409,10 @@ class LabelWindow(QMainWindow):
             self.envelope_sender_bold, self.envelope_sender_italic,
             self.envelope_recipient_font_family, self.envelope_recipient_font_size,
             self.envelope_recipient_bold, self.envelope_recipient_italic,
+            self.envelope_sender_alignment, self.envelope_recipient_alignment,
+            self.envelope_postal_code_enabled, self.envelope_postal_code_x,
+            self.envelope_postal_code_y, self.envelope_postal_code_width,
+            self.envelope_postal_code_height,
         )
 
     def open_envelope_editor(self) -> None:
@@ -1182,8 +1420,10 @@ class LabelWindow(QMainWindow):
         self.envelope_y.setMaximum(300)
         self.envelope_width.setMaximum(500)
         self.envelope_height.setMaximum(300)
-        dialog = EnvelopeEditorDialog(self.envelope_layout(), self._sample_sender(),
-                                      self._sample_recipient(), self)
+        dialog = EnvelopeEditorDialog(
+            self.envelope_layout(), self._sample_sender(), self._sample_recipient(), self,
+            self._sample_postal_code()
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         edited = dialog.layout_data
@@ -1198,10 +1438,17 @@ class LabelWindow(QMainWindow):
         self.envelope_sender_font_size = edited.sender_font_size
         self.envelope_sender_bold = edited.sender_bold
         self.envelope_sender_italic = edited.sender_italic
+        self.envelope_sender_alignment = edited.sender_alignment
         self.envelope_recipient_font_family = edited.recipient_font_family
         self.envelope_recipient_font_size = edited.recipient_font_size
         self.envelope_recipient_bold = edited.recipient_bold
         self.envelope_recipient_italic = edited.recipient_italic
+        self.envelope_recipient_alignment = edited.recipient_alignment
+        self.envelope_postal_code_enabled = edited.postal_code_enabled
+        self.envelope_postal_code_x = edited.postal_code_x
+        self.envelope_postal_code_y = edited.postal_code_y
+        self.envelope_postal_code_width = edited.postal_code_width
+        self.envelope_postal_code_height = edited.postal_code_height
         self.save_envelope_layout(edited)
         self.envelope_x.setValue(round(edited.recipient_x))
         self.envelope_y.setValue(round(edited.recipient_y))
@@ -1226,10 +1473,18 @@ class LabelWindow(QMainWindow):
                 continue
             if document.recipients:
                 recipient = document.recipients[0]
-                return "\n".join(value for value in (
-                    recipient.name, recipient.address,
-                    f"{recipient.postal_code} {recipient.city}") if value)
+                return format_recipient_text(recipient)
         return "Destinataire"
+
+    def _sample_postal_code(self) -> str:
+        for path in self.files.values():
+            try:
+                document = load_csv(path)
+            except ValueError:
+                continue
+            if document.recipients:
+                return document.recipients[0].postal_code
+        return "00000"
 
     def apply_preset(self, preset_name: str) -> None:
         values = self.available_formats.get(preset_name)
@@ -1260,10 +1515,12 @@ class LabelWindow(QMainWindow):
         self.sender_font_size = values.get("sender_font_size", self.sender_base_size)
         self.sender_bold = values.get("sender_bold", True)
         self.sender_italic = values.get("sender_italic", False)
+        self.sender_alignment = values.get("sender_alignment", "center")
         self.recipient_font_family = values.get("recipient_font_family", "DejaVu Sans")
         self.recipient_font_size = values.get("recipient_font_size", 15)
         self.recipient_bold = values.get("recipient_bold", True)
         self.recipient_italic = values.get("recipient_italic", False)
+        self.recipient_alignment = values.get("recipient_alignment", "center")
         self.preset_info.setText(f"Format actif : {preset_name}")
 
     def apply_format_values(self, selected: LabelFormat) -> None:
@@ -1293,10 +1550,12 @@ class LabelWindow(QMainWindow):
         self.sender_font_size = selected.sender_font_size
         self.sender_bold = selected.sender_bold
         self.sender_italic = selected.sender_italic
+        self.sender_alignment = selected.sender_alignment
         self.recipient_font_family = selected.recipient_font_family
         self.recipient_font_size = selected.recipient_font_size
         self.recipient_bold = selected.recipient_bold
         self.recipient_italic = selected.recipient_italic
+        self.recipient_alignment = selected.recipient_alignment
         self.preset_info.setText(f"Format actif : {selected.name}")
 
     def open_format_settings(self) -> None:
@@ -1331,6 +1590,7 @@ class LabelWindow(QMainWindow):
             self.sender_italic, self.recipient_font_family, self.recipient_font_size,
             self.recipient_bold, self.recipient_italic,
             self.sender_enabled,
+            self.sender_alignment, self.recipient_alignment,
         )
         dialog = FormatSettingsDialog(
             current, self.directory / "formats.json", sample_sender,
@@ -1365,7 +1625,11 @@ class LabelWindow(QMainWindow):
                 self.envelope_sender_font_size, self.envelope_sender_bold,
                 self.envelope_sender_italic, self.envelope_recipient_font_family,
                 self.envelope_recipient_font_size, self.envelope_recipient_bold,
-                self.envelope_recipient_italic
+                self.envelope_recipient_italic,
+                self.envelope_sender_alignment, self.envelope_recipient_alignment,
+                self.envelope_postal_code_enabled, self.envelope_postal_code_x,
+                self.envelope_postal_code_y, self.envelope_postal_code_width,
+                self.envelope_postal_code_height,
             )
         else:
             stats = render_pdf(documents, output, self.columns.value(), self.rows.value(),
@@ -1382,7 +1646,8 @@ class LabelWindow(QMainWindow):
                                self.sender_bold, self.sender_italic,
                                self.recipient_font_family, self.recipient_font_size,
                                self.recipient_bold, self.recipient_italic,
-                               6, self.sender_enabled)
+                               6, self.sender_enabled,
+                               self.sender_alignment, self.recipient_alignment)
         return output, stats
 
     @staticmethod
@@ -1427,18 +1692,43 @@ class LabelWindow(QMainWindow):
 
 
     def print_pdf(self) -> None:
+        options = PrintOptionsDialog(self)
+        if options.exec() != QDialog.DialogCode.Accepted:
+            return
         pdf_path = None
         try:
-            pdf_path, stats = self.create_pdf(show_guides=False)
+            test_page = options.test_page.isChecked()
+            pdf_path, stats = self.create_pdf(show_guides=test_page)
             printer_name = self.printers.currentData()
             command = ["lp"]
             if printer_name:
                 command.extend(["-d", printer_name])
+            command.extend(["-n", str(options.copies.value())])
+            page_range = "1" if test_page else options.page_range.text().strip()
+            if page_range:
+                command.extend(["-P", page_range])
             command.append(str(pdf_path))
+            page_summary = "page de test (page 1)" if test_page else (page_range or "toutes les pages")
+            printer_summary = self.printers.currentText()
+            mode_summary = "enveloppes" if self.mode.currentIndex() == 1 else "étiquettes"
+            confirmation = (
+                f"Imprimante : {printer_summary}\n"
+                f"Mode : {mode_summary}\n"
+                f"Copies : {options.copies.value()}\n"
+                f"Pages : {page_summary}\n\n"
+                "Lancer l'impression ?"
+            )
+            if QMessageBox.question(
+                self, "Confirmer l'impression", confirmation,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            ) != QMessageBox.StandardButton.Yes:
+                return
             result = subprocess.run(command, capture_output=True, text=True, check=False)
             if result.returncode:
                 raise RuntimeError(result.stderr.strip() or "CUPS a refusé le document")
-            QMessageBox.information(self, "Impression envoyée", self.render_summary(stats, "envoyée(s)"))
+            verb = "de test envoyée(s)" if test_page else "envoyée(s)"
+            QMessageBox.information(self, "Impression envoyée", self.render_summary(stats, verb))
         except (OSError, ValueError, RuntimeError) as error:
             QMessageBox.warning(self, "Impression impossible", str(error))
         finally:

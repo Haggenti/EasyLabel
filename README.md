@@ -42,3 +42,12 @@ une planche déjà commencée. Les positions sont comptées à partir de 1.
 La case `Contours de calibration` ajoute des repères en pointillés dans le PDF
 et l'aperçu. Elle permet de vérifier l'alignement sur une feuille ou une
 enveloppe de test avant une impression réelle.
+
+## Options d'impression
+
+Le bouton **Imprimer** permet de choisir le nombre de copies et une plage de
+pages, par exemple `1`, `2-4` ou `1,3,5`. Une confirmation récapitule
+l'imprimante, le mode, le nombre de copies et les pages avant l'envoi. L'option
+**Imprimer une page de test
+avec les contours** imprime uniquement la première page avec les repères de
+calibration.
