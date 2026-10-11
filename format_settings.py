@@ -493,6 +493,9 @@ class FormatSettingsDialog(QDialog):
         layout.addLayout(left, 1)
         layout.addLayout(editor, 2)
         layout.addWidget(self.preview, 2)
+        matching_items = self.preset_list.findItems(current.name, Qt.MatchFlag.MatchExactly)
+        if matching_items:
+            self.preset_list.setCurrentItem(matching_items[0])
         self.update_preview()
 
     @staticmethod

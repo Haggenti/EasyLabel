@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QSettings, QRectF, QSizeF, Qt
-from PySide6.QtGui import QFont, QFontMetricsF, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen
+from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetricsF, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
@@ -34,6 +34,10 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
     QGroupBox,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
     QWidget,
 )
 
@@ -530,6 +534,102 @@ class EnvelopeEditorDialog(QDialog):
         self.canvas.update()
 
 
+class EnvelopeFormatDialog(QDialog):
+    def __init__(self, formats: dict[str, dict], active_name: str,
+                 sender_text: str = "Expéditeur", recipient_text: str = "Destinataire",
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Formats d'enveloppes")
+        self.resize(560, 420)
+        self.formats = json.loads(json.dumps(formats))
+        self.sender_text = sender_text
+        self.recipient_text = recipient_text
+        self.active_name = active_name
+        self.current_layout = EnvelopeLayout()
+
+        self.preset_list = QListWidget()
+        self.preset_list.currentItemChanged.connect(self.select_format)
+        self.name = QLineEdit()
+        edit_button = QPushButton("Modifier la mise en page...")
+        edit_button.clicked.connect(self.edit_format)
+        save_button = QPushButton("Enregistrer le format")
+        save_button.clicked.connect(self.save_format)
+        delete_button = QPushButton("Supprimer")
+        delete_button.clicked.connect(self.delete_format)
+        use_button = QPushButton("Utiliser ce format")
+        use_button.clicked.connect(self.accept)
+        cancel_button = QPushButton("Annuler")
+        cancel_button.clicked.connect(self.reject)
+
+        form = QVBoxLayout()
+        form.addWidget(QLabel("Nom du format"))
+        form.addWidget(self.name)
+        form.addWidget(edit_button)
+        form.addWidget(save_button)
+        form.addStretch()
+        buttons = QHBoxLayout()
+        buttons.addWidget(delete_button)
+        buttons.addStretch()
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(use_button)
+        form.addLayout(buttons)
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Formats disponibles"))
+        left.addWidget(self.preset_list)
+        layout = QHBoxLayout(self)
+        layout.addLayout(left, 1)
+        layout.addLayout(form, 1)
+        self.refresh_list(active_name)
+
+    def refresh_list(self, selected_name: str) -> None:
+        self.preset_list.blockSignals(True)
+        self.preset_list.clear()
+        for name in self.formats:
+            self.preset_list.addItem(QListWidgetItem(name))
+        items = self.preset_list.findItems(selected_name, Qt.MatchFlag.MatchExactly)
+        if items:
+            self.preset_list.setCurrentItem(items[0])
+        elif self.preset_list.count():
+            self.preset_list.setCurrentRow(0)
+        self.preset_list.blockSignals(False)
+        item = self.preset_list.currentItem()
+        if item is not None:
+            self.select_format(item, None)
+
+    def select_format(self, item: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
+        del previous
+        if item is None:
+            return
+        self.active_name = item.text()
+        self.name.setText(self.active_name)
+        self.current_layout = EnvelopeLayout(**self.formats[self.active_name])
+
+    def edit_format(self) -> None:
+        dialog = EnvelopeEditorDialog(self.current_layout, self.sender_text,
+                                      self.recipient_text, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.current_layout = dialog.layout_data
+
+    def save_format(self) -> None:
+        name = self.name.text().strip()
+        if not name:
+            return
+        self.formats[name] = asdict(self.current_layout)
+        self.active_name = name
+        self.refresh_list(name)
+
+    def delete_format(self) -> None:
+        if len(self.formats) <= 1 or self.active_name not in self.formats:
+            return
+        del self.formats[self.active_name]
+        self.active_name = next(iter(self.formats))
+        self.refresh_list(self.active_name)
+
+    def format_result(self) -> tuple[str, EnvelopeLayout, dict[str, dict]]:
+        self.save_format()
+        return self.active_name, self.current_layout, self.formats
+
+
 class LabelWindow(QMainWindow):
     def __init__(self, directory: Path):
         super().__init__()
@@ -591,9 +691,17 @@ class LabelWindow(QMainWindow):
         self.mode.addItems(["Planche d'étiquettes", "Enveloppes"])
         self.mode.currentIndexChanged.connect(self.update_mode_controls)
         self.mode.currentIndexChanged.connect(self.update_summary)
+        self.envelope_presets = self.load_envelope_presets()
+        self.envelope_preset_name = self.settings.value(
+            "envelope_preset", next(iter(self.envelope_presets))
+        )
+        if self.envelope_preset_name not in self.envelope_presets:
+            self.envelope_preset_name = next(iter(self.envelope_presets))
         self.envelope_format = QComboBox()
-        self.envelope_format.addItem("DL - 220 x 110 mm", (220.0, 110.0))
-        self.envelope_format.addItem("C5 - 229 x 162 mm", (229.0, 162.0))
+        for name, values in self.envelope_presets.items():
+            self.envelope_format.addItem(
+                name, (values["page_width"], values["page_height"])
+            )
         self.envelope_page_width, self.envelope_page_height = self.envelope_format.currentData()
         self.envelope_format.currentIndexChanged.connect(self.update_envelope_format)
         self.envelope_x = self._spin_box(115, 0, 220, 1)
@@ -623,39 +731,53 @@ class LabelWindow(QMainWindow):
         export_button.clicked.connect(self.export_pdf)
         print_button = QPushButton("Imprimer")
         print_button.clicked.connect(self.print_pdf)
-        format_button = QPushButton("Formats...")
-        format_button.clicked.connect(self.open_format_settings)
-        self.options_button = QPushButton("Options...")
-        self.options_button.clicked.connect(self.open_layout_options)
 
-        layout_settings = QGroupBox("Mise en page")
-        settings = QGridLayout(layout_settings)
-        settings.addWidget(QLabel("Mode"), 0, 0)
-        settings.addWidget(self.mode, 0, 1)
-        settings.setColumnMinimumWidth(2, 12)
-        settings.addWidget(self.preset_info, 0, 3)
-        settings.addWidget(format_button, 0, 4)
-        settings.addWidget(self.options_button, 0, 5)
-        settings.setColumnStretch(6, 1)
+        file_menu = self.menuBar().addMenu("Fichier")
+        choose_directory_action = file_menu.addAction("Choisir le dossier CSV...")
+        choose_directory_action.triggered.connect(self.choose_directory)
+        self.directory_action = file_menu.addAction(str(self.directory))
+        self.directory_action.setEnabled(False)
 
-        envelope_settings = QHBoxLayout()
-        envelope_settings.addWidget(QLabel("Format"))
-        envelope_settings.addWidget(self.envelope_format)
-        envelope_edit_button = QPushButton("Ajuster visuellement...")
-        envelope_edit_button.clicked.connect(self.open_envelope_editor)
-        envelope_settings.addWidget(envelope_edit_button)
-        envelope_settings.addStretch()
-        self.envelope_panel = QWidget()
-        self.envelope_panel.setLayout(envelope_settings)
-        self.envelope_group = QGroupBox("Réglages enveloppe")
-        envelope_layout = QVBoxLayout(self.envelope_group)
-        envelope_layout.addWidget(self.envelope_panel)
+        layout_menu = self.menuBar().addMenu("Mise en page")
+        mode_group = QActionGroup(self)
+        self.label_mode_action = QAction("Planche d'étiquettes", self)
+        self.label_mode_action.setCheckable(True)
+        self.label_mode_action.triggered.connect(lambda: self.mode.setCurrentIndex(0))
+        self.envelope_mode_action = QAction("Enveloppes", self)
+        self.envelope_mode_action.setCheckable(True)
+        self.envelope_mode_action.triggered.connect(lambda: self.mode.setCurrentIndex(1))
+        mode_group.addAction(self.label_mode_action)
+        mode_group.addAction(self.envelope_mode_action)
+        layout_menu.addAction(self.label_mode_action)
+        layout_menu.addAction(self.envelope_mode_action)
+        layout_menu.addSeparator()
+        self.format_action = layout_menu.addAction("Formats...")
+        self.format_action.triggered.connect(self.open_format_settings)
+        self.options_action = layout_menu.addAction("Options...")
+        self.options_action.triggered.connect(self.open_layout_options)
+        layout_menu.addSeparator()
+        self.envelope_format_menu = layout_menu.addMenu("Format enveloppe")
+        self.envelope_format_actions = []
+        for index in range(self.envelope_format.count()):
+            action = self.envelope_format_menu.addAction(self.envelope_format.itemText(index))
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked=False, selected=index: self.envelope_format.setCurrentIndex(selected))
+            self.envelope_format_actions.append(action)
+        self.envelope_formats_action = layout_menu.addAction("Gérer les formats...")
+        self.envelope_formats_action.triggered.connect(self.open_envelope_formats)
 
-        printer_group = QGroupBox("Sortie")
-        printer_settings = QHBoxLayout(printer_group)
-        printer_settings.addWidget(QLabel("Imprimante"))
-        printer_settings.addWidget(self.printers)
+        printer_menu = self.menuBar().addMenu("Imprimante")
+        self.printer_actions = []
+        printer_group = QActionGroup(self)
+        for index in range(self.printers.count()):
+            action = printer_menu.addAction(self.printers.itemText(index))
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked=False, selected=index: self.printers.setCurrentIndex(selected))
+            printer_group.addAction(action)
+            self.printer_actions.append(action)
+        self.printers.currentIndexChanged.connect(self.update_printer_menu)
 
+        printer_settings = QHBoxLayout()
         buttons = QHBoxLayout()
         preview_button = QPushButton("Aperçu")
         preview_button.clicked.connect(self.preview_pdf)
@@ -672,9 +794,7 @@ class LabelWindow(QMainWindow):
         self.directory_info.setToolTip(str(self.directory))
         self.directory_info.setStyleSheet("QLabel { color: #5c6873; }")
         files_header.addWidget(self.directory_info, 1)
-        directory_button = QPushButton("Choisir le dossier...")
-        directory_button.clicked.connect(self.choose_directory)
-        files_header.addWidget(directory_button)
+        files_header.addWidget(self.preset_info)
         files_header.addStretch()
         selection_header = QHBoxLayout()
         selection_header.addWidget(self.select_all_checkbox)
@@ -683,13 +803,12 @@ class LabelWindow(QMainWindow):
         layout.addLayout(selection_header)
         layout.addWidget(self.file_list)
         layout.addWidget(self.summary)
-        layout.addWidget(layout_settings)
-        layout.addWidget(self.envelope_group)
-        layout.addWidget(printer_group)
+        layout.addLayout(printer_settings)
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
         self.update_mode_controls()
+        self.update_printer_menu()
         self.update_start_ranges()
         last_format = self.settings.value("last_format", "")
         if last_format:
@@ -712,6 +831,28 @@ class LabelWindow(QMainWindow):
         control.setValue(value)
         control.setSingleStep(step)
         return control
+
+    def load_envelope_presets(self) -> dict[str, dict]:
+        defaults = {
+            "DL - 220 x 110 mm": asdict(EnvelopeLayout()),
+            "C5 - 229 x 162 mm": asdict(EnvelopeLayout(
+                page_width=229, page_height=162, recipient_x=120,
+                recipient_y=52, recipient_width=95, recipient_height=80,
+            )),
+        }
+        saved = self.settings.value("envelope_formats", "")
+        if saved:
+            try:
+                values = json.loads(saved)
+                if isinstance(values, dict):
+                    defaults.update({name: data for name, data in values.items()
+                                     if isinstance(name, str) and isinstance(data, dict)})
+            except (TypeError, json.JSONDecodeError):
+                pass
+        return defaults
+
+    def save_envelope_presets(self) -> None:
+        self.settings.setValue("envelope_formats", json.dumps(self.envelope_presets))
 
     def load_directory_files(self) -> None:
         for path in find_csv_files(self.directory):
@@ -736,6 +877,7 @@ class LabelWindow(QMainWindow):
         self.file_list.clear()
         self.directory_info.setText(str(directory))
         self.directory_info.setToolTip(str(directory))
+        self.directory_action.setText(str(directory))
         self.load_directory_files()
 
     def add_file(self, path: Path) -> None:
@@ -775,6 +917,12 @@ class LabelWindow(QMainWindow):
                 self.printers.addItem(printer_name, printer_name)
         if not self.printers.count():
             self.printers.addItem("Imprimante par défaut", "")
+
+    def update_printer_menu(self) -> None:
+        if not hasattr(self, "printer_actions"):
+            return
+        for index, action in enumerate(self.printer_actions):
+            action.setChecked(index == self.printers.currentIndex())
 
     def selected_documents(self) -> list[CsvDocument]:
         documents = []
@@ -834,10 +982,24 @@ class LabelWindow(QMainWindow):
 
     def update_mode_controls(self) -> None:
         is_envelope = self.mode.currentIndex() == 1
-        self.envelope_group.setVisible(is_envelope)
-        self.options_button.setEnabled(not is_envelope)
+        self.label_mode_action.setChecked(not is_envelope)
+        self.envelope_mode_action.setChecked(is_envelope)
+        self.format_action.setVisible(not is_envelope)
+        self.options_action.setVisible(not is_envelope)
+        self.envelope_format_menu.menuAction().setVisible(is_envelope)
+        self.envelope_formats_action.setVisible(is_envelope)
+        for index, action in enumerate(self.envelope_format_actions):
+            action.setChecked(index == self.envelope_format.currentIndex())
+        self.update_active_format_display()
         self.start_column.setEnabled(not is_envelope)
         self.start_row.setEnabled(not is_envelope)
+
+    def update_active_format_display(self) -> None:
+        if self.mode.currentIndex() == 1:
+            text = f"Format enveloppe actif : {self.envelope_format.currentText()}"
+        else:
+            text = f"Format actif : {self.format_name}"
+        self.preset_info.setText(text)
 
     def update_start_ranges(self) -> None:
         self.start_column.setMaximum(self.columns.value())
@@ -874,12 +1036,89 @@ class LabelWindow(QMainWindow):
             self.show_guides.setChecked(guides.isChecked())
 
     def update_envelope_format(self) -> None:
-        self.envelope_page_width, self.envelope_page_height = self.envelope_format.currentData()
+        name = self.envelope_format.currentText()
+        if name in self.envelope_presets and name != self.envelope_preset_name:
+            self.apply_envelope_preset(name)
+        for index, action in enumerate(self.envelope_format_actions):
+            action.setChecked(index == self.envelope_format.currentIndex())
+        self.update_active_format_display()
+
+    def apply_envelope_preset(self, name: str) -> None:
+        values = self.envelope_presets.get(name)
+        if values is None:
+            return
+        layout_data = EnvelopeLayout(**values)
+        self.envelope_preset_name = name
+        self.settings.setValue("envelope_preset", name)
+        self.envelope_page_width = layout_data.page_width
+        self.envelope_page_height = layout_data.page_height
+        self.envelope_sender_x = layout_data.sender_x
+        self.envelope_sender_y = layout_data.sender_y
+        self.envelope_sender_width = layout_data.sender_width
+        self.envelope_sender_height = layout_data.sender_height
+        self.envelope_sender_enabled = layout_data.sender_enabled
+        self.envelope_sender_font_family = layout_data.sender_font_family
+        self.envelope_sender_font_size = layout_data.sender_font_size
+        self.envelope_sender_bold = layout_data.sender_bold
+        self.envelope_sender_italic = layout_data.sender_italic
+        self.envelope_recipient_font_family = layout_data.recipient_font_family
+        self.envelope_recipient_font_size = layout_data.recipient_font_size
+        self.envelope_recipient_bold = layout_data.recipient_bold
+        self.envelope_recipient_italic = layout_data.recipient_italic
+        self.envelope_x.setMaximum(max(220, round(layout_data.page_width)))
+        self.envelope_y.setMaximum(max(162, round(layout_data.page_height)))
+        self.envelope_width.setMaximum(max(220, round(layout_data.page_width)))
+        self.envelope_height.setMaximum(max(162, round(layout_data.page_height)))
+        self.envelope_x.setValue(round(layout_data.recipient_x))
+        self.envelope_y.setValue(round(layout_data.recipient_y))
+        self.envelope_width.setValue(round(layout_data.recipient_width))
+        self.envelope_height.setValue(round(layout_data.recipient_height))
+        combo_index = self.envelope_format.findText(name)
+        if combo_index >= 0 and self.envelope_format.currentIndex() != combo_index:
+            self.envelope_format.blockSignals(True)
+            self.envelope_format.setCurrentIndex(combo_index)
+            self.envelope_format.blockSignals(False)
+        self.update_active_format_display()
+
+    def refresh_envelope_preset_controls(self, active_name: str) -> None:
+        self.envelope_format.blockSignals(True)
+        self.envelope_format.clear()
+        for name, values in self.envelope_presets.items():
+            self.envelope_format.addItem(name, (values["page_width"], values["page_height"]))
+        self.envelope_format.blockSignals(False)
+        self.envelope_format_menu.clear()
+        self.envelope_format_actions = []
+        for index in range(self.envelope_format.count()):
+            action = self.envelope_format_menu.addAction(self.envelope_format.itemText(index))
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda checked=False, selected=index: self.envelope_format.setCurrentIndex(selected)
+            )
+            self.envelope_format_actions.append(action)
+        self.apply_envelope_preset(active_name)
+
+    def open_envelope_formats(self) -> None:
+        dialog = EnvelopeFormatDialog(
+            self.envelope_presets, self.envelope_preset_name,
+            self._sample_sender(), self._sample_recipient(), self
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        name, layout_data, formats = dialog.format_result()
+        self.envelope_presets = formats
+        self.save_envelope_presets()
+        self.refresh_envelope_preset_controls(name)
+        self.save_envelope_layout(layout_data)
 
     def save_envelope_layout(self, layout_data: EnvelopeLayout) -> None:
+        self.envelope_presets[self.envelope_preset_name] = asdict(layout_data)
+        self.save_envelope_presets()
         self.settings.setValue("envelope_layout", json.dumps(asdict(layout_data)))
 
     def restore_envelope_layout(self) -> None:
+        if self.envelope_preset_name in self.envelope_presets:
+            self.apply_envelope_preset(self.envelope_preset_name)
+            return
         saved_layout = self.settings.value("envelope_layout", "")
         if not saved_layout:
             return
@@ -1163,7 +1402,8 @@ class LabelWindow(QMainWindow):
             pdf_path, stats = self.create_pdf(show_guides=True)
             dialog = PdfPreviewDialog(
                 pdf_path, self.render_summary(stats, "préparée(s)"),
-                lambda show_guides: self.create_pdf(show_guides), self
+                lambda show_guides: self.create_pdf(show_guides),
+                self.export_pdf, self.print_pdf, self
             )
             dialog.exec()
             pdf_path.unlink(missing_ok=True)
@@ -1188,8 +1428,22 @@ class LabelWindow(QMainWindow):
             QMessageBox.warning(self, "Impression impossible", str(error))
 
 
+class PreviewPdfView(QPdfView):
+    def wheelEvent(self, event) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                self.setZoomMode(QPdfView.ZoomMode.Custom)
+                factor = 1.1 if delta > 0 else 1 / 1.1
+                self.setZoomFactor(max(0.2, min(self.zoomFactor() * factor, 5.0)))
+                event.accept()
+                return
+        super().wheelEvent(event)
+
+
 class PdfPreviewDialog(QDialog):
     def __init__(self, pdf_path: Path, summary: str = "", regenerate=None,
+                 export_callback=None, print_callback=None,
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Aperçu des étiquettes")
@@ -1200,7 +1454,7 @@ class PdfPreviewDialog(QDialog):
         self.document = QPdfDocument(self)
         self.document.load(str(pdf_path))
 
-        view = QPdfView()
+        view = PreviewPdfView()
         self.view = view
         view.setDocument(self.document)
         view.setPageMode(QPdfView.PageMode.MultiPage)
@@ -1235,7 +1489,16 @@ class PdfPreviewDialog(QDialog):
             self.summary_label.setStyleSheet("QLabel { color: #4d5963; padding: 3px; }")
             layout.addWidget(self.summary_label)
         layout.addWidget(view)
-        layout.addWidget(close_button)
+        export_button = QPushButton("Exporter le PDF")
+        export_button.clicked.connect(export_callback)
+        print_button = QPushButton("Imprimer")
+        print_button.clicked.connect(print_callback)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(export_button)
+        buttons.addWidget(print_button)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
 
     def toggle_guides(self, state: int) -> None:
         if self.regenerate is None:
