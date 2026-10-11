@@ -37,3 +37,7 @@ chargement et les marges de l'imprimante.
 
 En mode planche, `Colonne départ` et `Ligne départ` permettent de reprendre
 une planche déjà commencée. Les positions sont comptées à partir de 1.
+
+La case `Contours de calibration` ajoute des repères en pointillés dans le PDF
+et l'aperçu. Elle permet de vérifier l'alignement sur une feuille ou une
+enveloppe de test avant une impression réelle.

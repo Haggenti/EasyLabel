@@ -1,13 +1,16 @@
-﻿Destinataire;Adresse;Code postal;Ville
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba Avenue Jean Monestier;48400;Florac Trois Rivieres
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba 15 Place Du Barry;48100;Marvejols
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba 10 Quai Du Langouyrou;48300;Langogne
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba Place Du Pre Commun;48500;La Canourgue
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba Place Du Foirail;48200;St Chely D’apcher
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba 6 Bd Du Soubeyran;48000;Mende
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba Avenue Jean Monestier;48400;Florac Trois Rivieres
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba 15 Place Du Barry;48100;Marvejols
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba 10 Quai Du Langouyrou;48300;Langogne
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba Place Du Pre Commun;48500;La Canourgue
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba Place Du Foirail;48200;St Chely D’apcher
-;SUD PTT 48 6 boulevard du Soubeyran 48000 MENDE 06 09 93 65 47 - sudpttlozere@wanadoo.fr La Poste - Réseau Managers Et Coba 6 Bd Du Soubeyran;48000;Mende
+﻿#EXPEDITEUR;SUD PTT 48
+#EXPEDITEUR;6 boulevard du Soubeyran 48000 MENDE
+#EXPEDITEUR;06 09 93 65 47 - sudpttlozere@wanadoo.fr
+Destinataire;Adresse;Code postal;Ville
+La Poste - Réseau Managers Et Coba;Avenue Jean Monestier;48400;Florac Trois Rivieres
+La Poste - Réseau Managers Et Coba;15 Place Du Barry;48100;Marvejols
+La Poste - Réseau Managers Et Coba;10 Quai Du Langouyrou;48300;Langogne
+La Poste - Réseau Managers Et Coba;Place Du Pre Commun;48500;La Canourgue
+La Poste - Réseau Managers Et Coba;Place Du Foirail;48200;St Chely D’apcher
+La Poste - Réseau Managers Et Coba;6 Bd Du Soubeyran;48000;Mende
+La Poste - Réseau Managers Et Coba;Avenue Jean Monestier;48400;Florac Trois Rivieres
+La Poste - Réseau Managers Et Coba;15 Place Du Barry;48100;Marvejols
+La Poste - Réseau Managers Et Coba;10 Quai Du Langouyrou;48300;Langogne
+La Poste - Réseau Managers Et Coba;Place Du Pre Commun;48500;La Canourgue
+La Poste - Réseau Managers Et Coba;Place Du Foirail;48200;St Chely D’apcher
+La Poste - Réseau Managers Et Coba;6 Bd Du Soubeyran;48000;Mende

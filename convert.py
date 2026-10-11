@@ -35,12 +35,13 @@ def paragraph_text(paragraph):
     return re.sub(r"\s+", " ", "".join(parts)).strip()
 
 
-def extract_labels(input_path):
+def extract_document(input_path):
     with zipfile.ZipFile(input_path) as archive:
         xml_data = archive.read("content.xml")
 
     root = ET.fromstring(xml_data)
     rows = []
+    sender_lines = None
 
     for frame in root.findall(".//draw:page/draw:frame", NS):
         lines = [
@@ -52,18 +53,30 @@ def extract_labels(input_path):
         if not lines:
             continue
 
-        has_la_poste = any(
-            line.strip().upper() == "LA POSTE" for line in lines
-        )
-
+        index = None
         try:
             index = next(
                 i for i, line in enumerate(lines)
-                if line.strip().upper() == "LA POSTE"
+                if line.strip().upper().startswith("LA POSTE")
             )
+            page_sender = tuple(lines[:index])
+            recipient_name = lines[index]
             recipient_lines = lines[index + 1:]
         except StopIteration:
-            recipient_lines = lines
+            if len(lines) > 3:
+                page_sender = tuple(lines[:3])
+                recipient_name = lines[3]
+                recipient_lines = lines[4:]
+            else:
+                page_sender = ()
+                recipient_name = ""
+                recipient_lines = lines
+
+        if page_sender:
+            if sender_lines is None:
+                sender_lines = page_sender
+            elif sender_lines != page_sender:
+                raise ValueError("L'expéditeur change au cours du fichier ODG")
 
         code_postal = ""
         ville = ""
@@ -83,22 +96,30 @@ def extract_labels(input_path):
             adresse = " ".join(recipient_lines).strip()
 
         rows.append({
-            "Destinataire": "LA POSTE" if has_la_poste else "",
+            "Destinataire": recipient_name,
             "Adresse": adresse,
             "Code postal": code_postal,
             "Ville": ville,
         })
 
+    return tuple(sender_lines or ()), rows
+
+
+def extract_labels(input_path):
+    """Compatibility wrapper returning only recipient rows."""
+    _, rows = extract_document(input_path)
     return rows
 
 
 def convert_file(input_path, output_path):
-    rows = extract_labels(input_path)
+    sender_lines, rows = extract_document(input_path)
 
     if not rows:
         raise ValueError("Aucune étiquette trouvée")
 
     with output_path.open("w", newline="", encoding="utf-8-sig") as f:
+        for line in sender_lines:
+            f.write(f"#EXPEDITEUR;{line}\n")
         writer = csv.DictWriter(
             f,
             fieldnames=["Destinataire", "Adresse", "Code postal", "Ville"],

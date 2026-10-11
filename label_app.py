@@ -6,10 +6,11 @@ import subprocess
 import sys
 import tempfile
 import os
+import math
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QSettings, QRectF, QSizeF, Qt
-from PySide6.QtGui import QFont, QFontMetricsF, QPageLayout, QPageSize, QPainter, QPdfWriter
+from PySide6.QtGui import QFont, QFontMetricsF, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QComboBox,
+    QCheckBox,
     QWidget,
 )
 
@@ -66,7 +68,9 @@ def fit_font(text: str, rect: QRectF, base_size: int = 15, minimum_size: int = 9
 def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, rows: int,
                margin_left: float, margin_top: float, gap_x: float, gap_y: float,
                start_column: int = 1, start_row: int = 1,
-               page_width: float = 210, page_height: float = 297) -> RenderStats:
+               page_width: float = 210, page_height: float = 297,
+               show_guides: bool = False, sender_height_percent: float = 34,
+               sender_base_size: float = 9, sender_min_size: float = 6) -> RenderStats:
     writer = QPdfWriter(str(output_path))
     writer.setPageSize(QPageSize(QSizeF(page_width, page_height), QPageSize.Unit.Millimeter))
     writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter)
@@ -91,13 +95,18 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
             x = mm(margin_left + column * (label_width / POINTS_PER_MM + gap_x))
             y = mm(margin_top + row * (label_height / POINTS_PER_MM + gap_y))
             label_rect = QRectF(x, y, label_width, label_height)
-            sender_height = label_height * 0.34
+            if show_guides:
+                painter.save()
+                painter.setPen(QPen(Qt.GlobalColor.gray, 0.5, Qt.PenStyle.DashLine))
+                painter.drawRect(label_rect)
+                painter.restore()
+            sender_height = label_height * sender_height_percent / 100
             sender_rect = label_rect.adjusted(mm(2), mm(2), -mm(2), -label_height + sender_height)
             recipient_rect = label_rect.adjusted(mm(2), sender_height, -mm(2), -mm(2))
 
             sender_text = "\n".join(document.sender.lines)
             sender_font, sender_was_reduced = fit_font(
-                sender_text, sender_rect, 9, 6, "DejaVu Sans Condensed"
+                sender_text, sender_rect, int(sender_base_size), int(sender_min_size), "DejaVu Sans Condensed"
             )
             if sender_was_reduced:
                 stats.reduced += 1
@@ -137,7 +146,7 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
 def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                         envelope_size: tuple[float, float], recipient_x: float,
                         recipient_y: float, recipient_width: float,
-                        recipient_height: float) -> RenderStats:
+                        recipient_height: float, show_guides: bool = False) -> RenderStats:
     width_mm, height_mm = envelope_size
     writer = QPdfWriter(str(output_path))
     writer.setPageSize(QPageSize(QSizeF(width_mm, height_mm), QPageSize.Unit.Millimeter))
@@ -160,6 +169,12 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
 
             recipient_rect = QRectF(mm(recipient_x), mm(recipient_y),
                                     mm(recipient_width), mm(recipient_height))
+            if show_guides:
+                painter.save()
+                painter.setPen(QPen(Qt.GlobalColor.gray, 0.5, Qt.PenStyle.DashLine))
+                painter.drawRect(QRectF(0, 0, mm(width_mm), mm(height_mm)))
+                painter.drawRect(recipient_rect)
+                painter.restore()
             recipient_text = "\n".join(
                 value for value in (recipient.name, recipient.address,
                                     f"{recipient.postal_code} {recipient.city}") if value
@@ -201,19 +216,28 @@ class LabelWindow(QMainWindow):
         self.page_width = 210.0
         self.page_height = 297.0
         self.format_name = "A4 - 2 x 5"
+        self.sender_height_percent = 34.0
+        self.sender_base_size = 9.0
+        self.sender_min_size = 6.0
         self.format_storage_path = self.directory / "formats.json"
         self.settings = QSettings("Tik", "ImpressionEtiquettes")
         self.available_formats = load_formats(self.format_storage_path)
         self.preset = QComboBox()
         self.preset.addItems(self.available_formats)
         self.preset.currentTextChanged.connect(self.apply_preset)
+        self.show_guides = QCheckBox("Contours de calibration")
         self.start_column = self._spin_box(1, 1, 8, 1)
         self.start_row = self._spin_box(1, 1, 20, 1)
         self.columns.valueChanged.connect(self.update_start_ranges)
         self.rows.valueChanged.connect(self.update_start_ranges)
+        self.columns.valueChanged.connect(self.update_summary)
+        self.rows.valueChanged.connect(self.update_summary)
+        self.start_column.valueChanged.connect(self.update_summary)
+        self.start_row.valueChanged.connect(self.update_summary)
         self.mode = QComboBox()
         self.mode.addItems(["Planche d'étiquettes", "Enveloppes"])
         self.mode.currentIndexChanged.connect(self.update_mode_controls)
+        self.mode.currentIndexChanged.connect(self.update_summary)
         self.envelope_format = QComboBox()
         self.envelope_format.addItem("DL - 220 x 110 mm", (220.0, 110.0))
         self.envelope_format.addItem("C5 - 229 x 162 mm", (229.0, 162.0))
@@ -226,6 +250,10 @@ class LabelWindow(QMainWindow):
 
         choose_button = QPushButton("Ajouter des fichiers CSV")
         choose_button.clicked.connect(self.choose_files)
+        select_all_button = QPushButton("Tout sélectionner")
+        select_all_button.clicked.connect(lambda: self.set_all_files(True))
+        clear_selection_button = QPushButton("Tout désélectionner")
+        clear_selection_button.clicked.connect(lambda: self.set_all_files(False))
         export_button = QPushButton("Exporter le PDF")
         export_button.clicked.connect(self.export_pdf)
         print_button = QPushButton("Imprimer")
@@ -246,6 +274,7 @@ class LabelWindow(QMainWindow):
         start_settings.addWidget(self.start_column)
         start_settings.addWidget(QLabel("ligne"))
         start_settings.addWidget(self.start_row)
+        start_settings.addWidget(self.show_guides)
         start_settings.addStretch()
 
         envelope_settings = QHBoxLayout()
@@ -277,6 +306,11 @@ class LabelWindow(QMainWindow):
 
         layout = QVBoxLayout()
         layout.addWidget(QLabel("Fichiers CSV disponibles"))
+        file_actions = QHBoxLayout()
+        file_actions.addWidget(select_all_button)
+        file_actions.addWidget(clear_selection_button)
+        file_actions.addStretch()
+        layout.addLayout(file_actions)
         layout.addWidget(self.file_list)
         layout.addWidget(self.summary)
         layout.addLayout(settings)
@@ -312,13 +346,17 @@ class LabelWindow(QMainWindow):
     def add_file(self, path: Path) -> None:
         if str(path) in self.files:
             return
+        document = None
         try:
             document = load_csv(path)
-            label = f"{path.name} ({len(document.recipients)} étiquettes)"
+            warning = " [!]" if document.issues else ""
+            label = f"{path.name} ({len(document.recipients)} étiquettes){warning}"
         except ValueError as error:
             label = f"{path.name} (erreur : {error})"
         item = QListWidgetItem(label)
         item.setData(Qt.ItemDataRole.UserRole, str(path))
+        if document is not None and document.issues:
+            item.setToolTip("\n".join(document.issues))
         item.setCheckState(Qt.CheckState.Unchecked)
         self.file_list.addItem(item)
         self.files[str(path)] = path
@@ -352,11 +390,34 @@ class LabelWindow(QMainWindow):
         return documents
 
     def update_summary(self) -> None:
-        count = sum(
-            1 for index in range(self.file_list.count())
-            if self.file_list.item(index).checkState() == Qt.CheckState.Checked
-        )
-        self.summary.setText(f"{count} fichier(s) sélectionné(s)")
+        documents = []
+        for index in range(self.file_list.count()):
+            item = self.file_list.item(index)
+            if item.checkState() != Qt.CheckState.Checked:
+                continue
+            try:
+                documents.append(load_csv(Path(item.data(Qt.ItemDataRole.UserRole))))
+            except ValueError:
+                continue
+        file_count = len(documents)
+        label_count = sum(len(document.recipients) for document in documents)
+        issue_count = sum(len(document.issues) for document in documents)
+        if self.mode.currentIndex() == 1:
+            page_count = label_count
+        else:
+            capacity = self.columns.value() * self.rows.value()
+            first_capacity = capacity - ((self.start_row.value() - 1) * self.columns.value() + self.start_column.value() - 1)
+            page_count = 0 if not label_count else 1 + max(0, math.ceil((label_count - first_capacity) / capacity))
+        message = f"{file_count} fichier(s), {label_count} étiquette(s), {page_count} page(s)"
+        if issue_count:
+            message += f" - [!] {issue_count} avertissement(s)"
+        self.summary.setText(message)
+
+    def set_all_files(self, selected: bool) -> None:
+        state = Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked
+        for index in range(self.file_list.count()):
+            self.file_list.item(index).setCheckState(state)
+        self.update_summary()
 
     def update_mode_controls(self) -> None:
         is_envelope = self.mode.currentIndex() == 1
@@ -382,12 +443,16 @@ class LabelWindow(QMainWindow):
         self.margin_top.setValue(values["margin_top"])
         self.gap_x.setValue(values["gap_x"])
         self.gap_y.setValue(values["gap_y"])
+        self.sender_height_percent = values.get("sender_height_percent", 34)
+        self.sender_base_size = values.get("sender_base_size", 9)
+        self.sender_min_size = values.get("sender_min_size", 6)
 
     def open_format_settings(self) -> None:
         current = LabelFormat(
             self.format_name, self.page_width, self.page_height,
             self.columns.value(), self.rows.value(), self.margin_left.value(),
             self.margin_top.value(), self.gap_x.value(), self.gap_y.value()
+            , self.sender_height_percent, self.sender_base_size, self.sender_min_size
         )
         dialog = FormatSettingsDialog(current, self.directory / "formats.json", self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -403,6 +468,9 @@ class LabelWindow(QMainWindow):
         self.margin_top.setValue(selected.margin_top)
         self.gap_x.setValue(selected.gap_x)
         self.gap_y.setValue(selected.gap_y)
+        self.sender_height_percent = selected.sender_height_percent
+        self.sender_base_size = selected.sender_base_size
+        self.sender_min_size = selected.sender_min_size
         if self.preset.findText(selected.name) < 0:
             self.preset.addItem(selected.name)
         self.preset.blockSignals(True)
@@ -422,13 +490,16 @@ class LabelWindow(QMainWindow):
                 documents, output, self.envelope_format.currentData(),
                 self.envelope_x.value(), self.envelope_y.value(),
                 self.envelope_width.value(), self.envelope_height.value()
+                , self.show_guides.isChecked()
             )
         else:
             stats = render_pdf(documents, output, self.columns.value(), self.rows.value(),
                                self.margin_left.value(), self.margin_top.value(),
                                self.gap_x.value(), self.gap_y.value(),
                                self.start_column.value(), self.start_row.value(),
-                               self.page_width, self.page_height)
+                               self.page_width, self.page_height,
+                               self.show_guides.isChecked(), self.sender_height_percent,
+                               self.sender_base_size, self.sender_min_size)
         return output, stats
 
     @staticmethod

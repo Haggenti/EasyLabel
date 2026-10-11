@@ -37,6 +37,21 @@ class CsvLoadingTests(unittest.TestCase):
 
         self.assertEqual(document.sender.lines, ())
         self.assertEqual(len(document.recipients), 1)
+        self.assertIn("expéditeur absent", document.issues)
+
+    def test_reports_incomplete_recipient_row(self):
+        content = (
+            "#EXPEDITEUR;SUD PTT\n"
+            "Destinataire;Adresse;Code postal;Ville\n"
+            "LA POSTE;Rue du Test;;RODEZ\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "labels.csv"
+            path.write_text(content, encoding="utf-8")
+
+            document = load_csv(path)
+
+        self.assertTrue(any("Code postal" in issue for issue in document.issues))
 
 
 if __name__ == "__main__":

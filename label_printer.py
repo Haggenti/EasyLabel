@@ -30,6 +30,7 @@ class CsvDocument:
     path: Path
     sender: Sender
     recipients: tuple[Recipient, ...]
+    issues: tuple[str, ...] = ()
 
 
 def load_csv(path: Path) -> CsvDocument:
@@ -60,15 +61,23 @@ def load_csv(path: Path) -> CsvDocument:
 
     indexes = {column: headers.index(column) for column in REQUIRED_COLUMNS}
     recipients: list[Recipient] = []
+    issues: list[str] = []
+    if not sender_lines:
+        issues.append("expéditeur absent")
     for line_number, row in enumerate(csv_rows[1:], start=2):
         if not any(value.strip() for value in row):
             continue
         values = [row[index].strip() if index < len(row) else "" for index in indexes.values()]
         if not any(values):
             continue
+        missing = [column for column, value in zip(REQUIRED_COLUMNS, values) if not value]
+        if missing:
+            issues.append(f"ligne {line_number}: {', '.join(missing)} manquant(s)")
         recipients.append(Recipient(*values))
 
-    return CsvDocument(path, Sender(tuple(sender_lines)), tuple(recipients))
+    if not recipients:
+        issues.append("aucun destinataire")
+    return CsvDocument(path, Sender(tuple(sender_lines)), tuple(recipients), tuple(issues))
 
 
 def find_csv_files(directory: Path) -> list[Path]:

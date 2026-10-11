@@ -27,10 +27,12 @@ PRESETS = {
     "A4 - 2 x 5": {
         "page_width": 210, "page_height": 297, "columns": 2, "rows": 5,
         "margin_left": 10, "margin_top": 10, "gap_x": 3, "gap_y": 3,
+        "sender_height_percent": 34, "sender_base_size": 9, "sender_min_size": 6,
     },
     "A4 - 3 x 8": {
         "page_width": 210, "page_height": 297, "columns": 3, "rows": 8,
         "margin_left": 8, "margin_top": 10, "gap_x": 2, "gap_y": 2,
+        "sender_height_percent": 34, "sender_base_size": 9, "sender_min_size": 6,
     },
 }
 
@@ -56,6 +58,9 @@ class LabelFormat:
     margin_top: float = 10
     gap_x: float = 3
     gap_y: float = 3
+    sender_height_percent: float = 34
+    sender_base_size: float = 9
+    sender_min_size: float = 6
 
 
 class FormatPreview(QWidget):
@@ -118,9 +123,13 @@ class FormatSettingsDialog(QDialog):
         self.margin_top = self._number(current.margin_top, 0, 100)
         self.gap_x = self._number(current.gap_x, 0, 100)
         self.gap_y = self._number(current.gap_y, 0, 100)
+        self.sender_height_percent = self._number(current.sender_height_percent, 10, 70)
+        self.sender_base_size = self._number(current.sender_base_size, 5, 20)
+        self.sender_min_size = self._number(current.sender_min_size, 4, 15)
         self.preview = FormatPreview()
         self.controls = (self.name, self.page_width, self.page_height, self.columns,
                          self.rows, self.margin_left, self.margin_top, self.gap_x, self.gap_y)
+        self.controls += (self.sender_height_percent, self.sender_base_size, self.sender_min_size)
         for control in self.controls:
             if hasattr(control, "textChanged"):
                 control.textChanged.connect(self.update_preview)
@@ -134,6 +143,9 @@ class FormatSettingsDialog(QDialog):
             ("Lignes", self.rows), ("Marge gauche (mm)", self.margin_left),
             ("Marge haut (mm)", self.margin_top), ("Espace horizontal (mm)", self.gap_x),
             ("Espace vertical (mm)", self.gap_y),
+            ("Hauteur expéditeur (%)", self.sender_height_percent),
+            ("Taille expéditeur (pt)", self.sender_base_size),
+            ("Taille minimale (pt)", self.sender_min_size),
         ):
             form.addRow(label, control)
 
@@ -181,15 +193,17 @@ class FormatSettingsDialog(QDialog):
             return
         values = self.formats[item.text()]
         self.name.setText(item.text())
-        for field in ("page_width", "page_height", "columns", "rows", "margin_left", "margin_top", "gap_x", "gap_y"):
-            getattr(self, field).setValue(values[field])
+        defaults = asdict(LabelFormat(item.text()))
+        for field in ("page_width", "page_height", "columns", "rows", "margin_left", "margin_top", "gap_x", "gap_y", "sender_height_percent", "sender_base_size", "sender_min_size"):
+            getattr(self, field).setValue(values.get(field, defaults[field]))
 
     def current_values(self) -> LabelFormat:
         return LabelFormat(
             self.name.text().strip() or "Format personnalisé",
             self.page_width.value(), self.page_height.value(), int(self.columns.value()),
             int(self.rows.value()), self.margin_left.value(), self.margin_top.value(),
-            self.gap_x.value(), self.gap_y.value(),
+            self.gap_x.value(), self.gap_y.value(), self.sender_height_percent.value(),
+            self.sender_base_size.value(), self.sender_min_size.value(),
         )
 
     def update_preview(self) -> None:
