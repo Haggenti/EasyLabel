@@ -68,6 +68,7 @@ class FormatTests(unittest.TestCase):
 
         self.assertTrue(output.exists())
         self.assertGreater(stats.labels, 0)
+        self.assertEqual(stats.pages, (stats.labels + 9) // 10)
         output.unlink(missing_ok=True)
 
     def test_render_envelope_with_custom_layout(self):
@@ -84,6 +85,7 @@ class FormatTests(unittest.TestCase):
 
         self.assertTrue(output.exists())
         self.assertGreater(stats.labels, 0)
+        self.assertEqual(stats.pages, stats.labels)
         output.unlink(missing_ok=True)
 
     def test_invalid_envelope_presets_are_ignored(self):

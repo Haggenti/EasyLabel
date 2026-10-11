@@ -56,6 +56,7 @@ def mm(value: float) -> float:
 class RenderStats:
     def __init__(self) -> None:
         self.labels = 0
+        self.pages = 0
         self.reduced = 0
         self.overflow = 0
 
@@ -355,8 +356,11 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
 
     for document in documents:
         for recipient in document.recipients:
+            if stats.labels == 0:
+                stats.pages = 1
             if slot == columns * rows:
                 writer.newPage()
+                stats.pages += 1
                 slot = 0
             column = slot % columns
             row = slot // columns
@@ -451,6 +455,7 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
         for index, recipient in enumerate(document.recipients):
             if index or stats.labels:
                 writer.newPage()
+            stats.pages += 1
             sender_rect = QRectF(mm(sender_x), mm(sender_y),
                                  mm(sender_width if sender_width is not None else width_mm * 0.42),
                                  mm(sender_height))
@@ -937,6 +942,10 @@ class LabelWindow(QMainWindow):
         self.select_all_checkbox = QCheckBox("Sélectionner tous les fichiers")
         self.select_all_checkbox.setTristate(True)
         self.select_all_checkbox.stateChanged.connect(self.select_all_changed)
+        self.file_filter = QLineEdit()
+        self.file_filter.setPlaceholderText("Filtrer les fichiers...")
+        self.file_filter.setClearButtonEnabled(True)
+        self.file_filter.textChanged.connect(self.filter_files)
         export_button = QPushButton("Exporter le PDF")
         export_button.clicked.connect(self.export_pdf)
         print_button = QPushButton("Imprimer")
@@ -1010,8 +1019,12 @@ class LabelWindow(QMainWindow):
         selection_header = QHBoxLayout()
         selection_header.addWidget(self.select_all_checkbox)
         selection_header.addStretch()
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Filtre"))
+        filter_row.addWidget(self.file_filter, 1)
         layout.addLayout(files_header)
         layout.addLayout(selection_header)
+        layout.addLayout(filter_row)
         layout.addWidget(self.file_list)
         layout.addWidget(self.summary)
         layout.addLayout(printer_settings)
@@ -1123,6 +1136,13 @@ class LabelWindow(QMainWindow):
         self.file_list.addItem(item)
         self.files[str(path)] = path
 
+    def filter_files(self, text: str) -> None:
+        query = text.strip().casefold()
+        for index in range(self.file_list.count()):
+            item = self.file_list.item(index)
+            item.setHidden(bool(query) and query not in item.text().casefold())
+        self.update_summary()
+
     def choose_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Sélectionner des CSV", str(self.directory), "CSV (*.csv)")
         for path in paths:
@@ -1159,20 +1179,23 @@ class LabelWindow(QMainWindow):
 
     def update_summary(self) -> None:
         documents = []
-        selected_count = 0
+        active_selected_count = 0
+        active_count = 0
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
+            if not item.isHidden():
+                active_count += 1
+                if item.checkState() == Qt.CheckState.Checked:
+                    active_selected_count += 1
             if item.checkState() != Qt.CheckState.Checked:
                 continue
-            selected_count += 1
             try:
                 documents.append(load_csv(Path(item.data(Qt.ItemDataRole.UserRole))))
             except ValueError:
                 continue
-        total_count = self.file_list.count()
-        if total_count and selected_count == total_count:
+        if active_count and active_selected_count == active_count:
             checkbox_state = Qt.CheckState.Checked
-        elif selected_count:
+        elif active_selected_count:
             checkbox_state = Qt.CheckState.PartiallyChecked
         else:
             checkbox_state = Qt.CheckState.Unchecked
@@ -1196,7 +1219,9 @@ class LabelWindow(QMainWindow):
     def set_all_files(self, selected: bool) -> None:
         state = Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked
         for index in range(self.file_list.count()):
-            self.file_list.item(index).setCheckState(state)
+            item = self.file_list.item(index)
+            if not item.isHidden():
+                item.setCheckState(state)
         self.update_summary()
 
     def select_all_changed(self, state: int) -> None:
@@ -1652,11 +1677,9 @@ class LabelWindow(QMainWindow):
 
     @staticmethod
     def render_summary(stats: RenderStats, verb: str) -> str:
-        message = f"{stats.labels} étiquette(s) {verb}."
-        if stats.reduced:
-            message += f"\n{stats.reduced} étiquette(s) ont été réduite(s) pour tenir."
+        message = f"{stats.labels} étiquette(s) {verb}.\n{stats.pages} page(s) à imprimer."
         if stats.overflow:
-            message += f"\nAttention : {stats.overflow} étiquette(s) restent trop longues."
+            message += f"\nAttention : {stats.overflow} étiquette(s) trop longue(s)."
         return message
 
     def export_pdf(self) -> None:
@@ -1820,10 +1843,13 @@ class PdfPreviewDialog(QDialog):
             self.document.load(str(new_path))
             old_path.unlink(missing_ok=True)
             if self.summary_label is not None:
-                self.summary_label.setText(
-                    f"{stats.labels} étiquette(s) préparée(s)."
-                    + (f" {stats.reduced} réduite(s)." if stats.reduced else "")
+                summary = (
+                    f"{stats.labels} étiquette(s) préparée(s).\n"
+                    f"{stats.pages} page(s) à imprimer."
                 )
+                if stats.overflow:
+                    summary += f"\nAttention : {stats.overflow} étiquette(s) trop longue(s)."
+                self.summary_label.setText(summary)
         except (OSError, ValueError):
             self.guides_checkbox.blockSignals(True)
             self.guides_checkbox.setChecked(not show_guides)
