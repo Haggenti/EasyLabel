@@ -265,7 +265,6 @@ class PositionCanvas(QWidget):
     @staticmethod
     def snap_size(value: float) -> float:
         return round(value * 2) / 2
-        self.drag_start = None
 
     def clamp_offsets(self) -> None:
         for element in ("sender", "recipient"):

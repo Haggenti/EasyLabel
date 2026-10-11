@@ -605,7 +605,8 @@ class EnvelopeFormatDialog(QDialog):
         self.current_layout = EnvelopeLayout(**self.formats[self.active_name])
 
     def edit_format(self) -> None:
-        dialog = EnvelopeEditorDialog(self.current_layout, self.sender_text,
+        edited_layout = EnvelopeLayout(**asdict(self.current_layout))
+        dialog = EnvelopeEditorDialog(edited_layout, self.sender_text,
                                       self.recipient_text, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.current_layout = dialog.layout_data
@@ -845,8 +846,16 @@ class LabelWindow(QMainWindow):
             try:
                 values = json.loads(saved)
                 if isinstance(values, dict):
-                    defaults.update({name: data for name, data in values.items()
-                                     if isinstance(name, str) and isinstance(data, dict)})
+                    for name, data in values.items():
+                        if not isinstance(name, str) or not isinstance(data, dict):
+                            continue
+                        required_fields = EnvelopeLayout.__dataclass_fields__
+                        if not set(required_fields).issubset(data):
+                            continue
+                        try:
+                            defaults[name] = asdict(EnvelopeLayout(**data))
+                        except (TypeError, ValueError):
+                            continue
             except (TypeError, json.JSONDecodeError):
                 pass
         return defaults
@@ -1386,18 +1395,22 @@ class LabelWindow(QMainWindow):
         return message
 
     def export_pdf(self) -> None:
+        temporary_pdf = None
         try:
             temporary_pdf, stats = self.create_pdf(show_guides=False)
             output, _ = QFileDialog.getSaveFileName(self, "Exporter le PDF", str(self.directory / "etiquettes.pdf"), "PDF (*.pdf)")
             if output:
                 Path(output).write_bytes(temporary_pdf.read_bytes())
-            temporary_pdf.unlink(missing_ok=True)
             if output:
                 QMessageBox.information(self, "PDF créé", self.render_summary(stats, "exportée(s)"))
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Impossible de générer le PDF", str(error))
+        finally:
+            if temporary_pdf is not None:
+                temporary_pdf.unlink(missing_ok=True)
 
     def preview_pdf(self) -> None:
+        pdf_path = None
         try:
             pdf_path, stats = self.create_pdf(show_guides=True)
             dialog = PdfPreviewDialog(
@@ -1406,12 +1419,15 @@ class LabelWindow(QMainWindow):
                 self.export_pdf, self.print_pdf, self
             )
             dialog.exec()
-            pdf_path.unlink(missing_ok=True)
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Aperçu impossible", str(error))
+        finally:
+            if pdf_path is not None:
+                pdf_path.unlink(missing_ok=True)
 
 
     def print_pdf(self) -> None:
+        pdf_path = None
         try:
             pdf_path, stats = self.create_pdf(show_guides=False)
             printer_name = self.printers.currentData()
@@ -1420,12 +1436,14 @@ class LabelWindow(QMainWindow):
                 command.extend(["-d", printer_name])
             command.append(str(pdf_path))
             result = subprocess.run(command, capture_output=True, text=True, check=False)
-            pdf_path.unlink(missing_ok=True)
             if result.returncode:
                 raise RuntimeError(result.stderr.strip() or "CUPS a refusé le document")
             QMessageBox.information(self, "Impression envoyée", self.render_summary(stats, "envoyée(s)"))
         except (OSError, ValueError, RuntimeError) as error:
             QMessageBox.warning(self, "Impression impossible", str(error))
+        finally:
+            if pdf_path is not None:
+                pdf_path.unlink(missing_ok=True)
 
 
 class PreviewPdfView(QPdfView):

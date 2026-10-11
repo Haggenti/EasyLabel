@@ -1,12 +1,15 @@
 import json
+import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from format_settings import LabelFormat, PositionEditorDialog
-from label_app import EnvelopeLayout, render_envelope_pdf, render_pdf
+from label_app import (EnvelopeFormatDialog, EnvelopeLayout, LabelWindow, RenderStats,
+                       render_envelope_pdf, render_pdf)
 from label_printer import load_csv
 
 
@@ -75,6 +78,57 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(output.exists())
         self.assertGreater(stats.labels, 0)
         output.unlink(missing_ok=True)
+
+    def test_invalid_envelope_presets_are_ignored(self):
+        valid = asdict(EnvelopeLayout(page_width=229))
+
+        class SettingsStub:
+            def value(self, key, default=""):
+                del key, default
+                return json.dumps({"Valide": valid, "Invalide": {"page_width": 229}})
+
+        window = LabelWindow.__new__(LabelWindow)
+        window.settings = SettingsStub()
+        presets = LabelWindow.load_envelope_presets(window)
+
+        self.assertIn("Valide", presets)
+        self.assertNotIn("Invalide", presets)
+
+    def test_cancel_envelope_edit_does_not_mutate_preset(self):
+        layout = EnvelopeLayout(recipient_x=126)
+        dialog = EnvelopeFormatDialog({"Test": asdict(layout)}, "Test")
+        editor = Mock()
+        editor.exec.return_value = QDialog.DialogCode.Rejected
+
+        def create_editor(edited_layout, *args):
+            edited_layout.recipient_x = 999
+            return editor
+
+        with patch("label_app.EnvelopeEditorDialog", side_effect=create_editor):
+            dialog.edit_format()
+
+        self.assertEqual(dialog.current_layout.recipient_x, 126)
+        dialog.close()
+
+    def test_export_cleans_temporary_pdf_on_error(self):
+        window = LabelWindow(Path("csv"))
+        output = Path(tempfile.mkstemp(suffix=".pdf")[1])
+        window.create_pdf = lambda show_guides: (output, RenderStats())
+        with patch("label_app.QFileDialog.getSaveFileName", side_effect=OSError("test")):
+            with patch("label_app.QMessageBox.warning"):
+                window.export_pdf()
+        self.assertFalse(output.exists())
+        window.close()
+
+    def test_print_cleans_temporary_pdf_on_error(self):
+        window = LabelWindow(Path("csv"))
+        output = Path(tempfile.mkstemp(suffix=".pdf")[1])
+        window.create_pdf = lambda show_guides: (output, RenderStats())
+        with patch("label_app.subprocess.run", side_effect=OSError("test")):
+            with patch("label_app.QMessageBox.warning"):
+                window.print_pdf()
+        self.assertFalse(output.exists())
+        window.close()
 
 
 if __name__ == "__main__":

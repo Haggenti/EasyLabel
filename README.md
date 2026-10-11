@@ -25,8 +25,9 @@ LA POSTE;Le Bourg;46500;ALVIGNAC
 
 ## Impression sur enveloppes
 
-Le mode **Enveloppes** génère une page PDF par destinataire. Deux formats sont
-disponibles :
+Le mode **Enveloppes** génère une page PDF par destinataire. Des presets sont
+disponibles et peuvent être créés, modifiés ou supprimés depuis **Mise en page >
+Enveloppes > Gérer les formats...**. Deux presets sont fournis par défaut :
 
 - DL : 220 x 110 mm ;
 - C5 : 229 x 162 mm.
