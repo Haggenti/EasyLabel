@@ -22,3 +22,18 @@ optionnelles et doivent précéder l'en-tête :
 Destinataire;Adresse;Code postal;Ville
 LA POSTE;Le Bourg;46500;ALVIGNAC
 ```
+
+## Impression sur enveloppes
+
+Le mode **Enveloppes** génère une page PDF par destinataire. Deux formats sont
+disponibles :
+
+- DL : 220 x 110 mm ;
+- C5 : 229 x 162 mm.
+
+La position et la taille de la zone destinataire se règlent en millimètres.
+Commencer par imprimer une enveloppe de test, puis ajuster X et Y selon le
+chargement et les marges de l'imprimante.
+
+En mode planche, `Colonne départ` et `Ligne départ` permettent de reprendre
+une planche déjà commencée. Les positions sont comptées à partir de 1.
