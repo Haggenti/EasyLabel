@@ -12,7 +12,7 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QMarginsF, QSettings, QRectF, QSize, QSizeF, Qt, QUrl, Signal
+from PySide6.QtCore import QMarginsF, QPoint, QSettings, QRectF, QSize, QSizeF, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QFontMetricsF, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QTransform
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -182,16 +182,48 @@ class EnvelopeCanvas(QWidget):
         self.zoom = 1.0
         self.setMinimumSize(700, 400)
 
-    def set_zoom(self, value: float) -> None:
-        self.zoom = max(0.5, min(3.0, value))
+    def set_zoom(self, value: float, anchor: QPoint | None = None) -> None:
+        old_zoom = self.zoom
+        new_zoom = max(0.5, min(3.0, value))
+        if new_zoom == old_zoom:
+            return
+        scroll_area = self._scroll_area()
+        viewport_anchor = None
+        page_anchor = None
+        if anchor is not None:
+            old_scale, old_page = self.scale_and_page()
+            page_anchor = ((anchor.x() - old_page.left()) / old_scale,
+                           (anchor.y() - old_page.top()) / old_scale)
+            if scroll_area is not None:
+                viewport_anchor = QPoint(
+                    anchor.x() - scroll_area.horizontalScrollBar().value(),
+                    anchor.y() - scroll_area.verticalScrollBar().value(),
+                )
+        self.zoom = new_zoom
         self.resize(round(self.BASE_WIDTH * self.zoom), round(self.BASE_HEIGHT * self.zoom))
+        if page_anchor is not None and viewport_anchor is not None and scroll_area is not None:
+            new_scale, new_page = self.scale_and_page()
+            target = QPoint(
+                round(new_page.left() + page_anchor[0] * new_scale),
+                round(new_page.top() + page_anchor[1] * new_scale),
+            )
+            scroll_area.horizontalScrollBar().setValue(target.x() - viewport_anchor.x())
+            scroll_area.verticalScrollBar().setValue(target.y() - viewport_anchor.y())
         self.zoomChanged.emit(self.zoom)
         self.update()
 
     def wheelEvent(self, event) -> None:
         direction = 1 if event.angleDelta().y() > 0 else -1
-        self.set_zoom(self.zoom + direction * 0.25)
+        self.set_zoom(self.zoom + direction * 0.25, event.position().toPoint())
         event.accept()
+
+    def _scroll_area(self) -> QScrollArea | None:
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                return parent
+            parent = parent.parentWidget()
+        return None
 
     def scale_and_page(self) -> tuple[float, QRectF]:
         base_scale = min((self.BASE_WIDTH - self.BASE_MARGIN * 2) / self.layout_data.page_width,
@@ -258,6 +290,48 @@ class EnvelopeCanvas(QWidget):
             image = image.transformed(QTransform().rotate(90))
         return image
 
+    def draw_rulers(self, painter: QPainter, scale: float, page: QRectF) -> None:
+        ruler_color = Qt.GlobalColor.darkGray
+        painter.save()
+        painter.setPen(QPen(ruler_color, 1))
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        horizontal_y = page.bottom() + 18
+        vertical_x = page.left() - 18
+        painter.drawLine(page.left(), horizontal_y, page.right(), horizontal_y)
+        painter.drawLine(vertical_x, page.top(), vertical_x, page.bottom())
+        painter.drawText(QRectF(page.left() - 8, horizontal_y + 2, 16, 12),
+                         Qt.AlignmentFlag.AlignCenter, "0")
+        painter.drawText(QRectF(vertical_x - 28, page.bottom() - 6, 26, 12),
+                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "0")
+
+        for millimeters in range(1, math.ceil(self.layout_data.page_width) + 1):
+            if millimeters % 10:
+                continue
+            x = page.left() + millimeters * scale
+            if x > page.right() + 0.1:
+                break
+            tick_length = 8 if millimeters % 50 == 0 else 5
+            painter.drawLine(x, horizontal_y, x, horizontal_y - tick_length)
+            if millimeters % 50 == 0:
+                painter.drawText(QRectF(x - 20, horizontal_y + 2, 40, 12),
+                                 Qt.AlignmentFlag.AlignCenter, str(millimeters))
+
+        for millimeters in range(1, math.ceil(self.layout_data.page_height) + 1):
+            if millimeters % 10:
+                continue
+            y = page.bottom() - millimeters * scale
+            if y < page.top() - 0.1:
+                break
+            tick_length = 8 if millimeters % 50 == 0 else 5
+            painter.drawLine(vertical_x, y, vertical_x + tick_length, y)
+            if millimeters % 50 == 0:
+                painter.drawText(QRectF(vertical_x - 44, y - 6, 40, 12),
+                                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                                 str(millimeters))
+        painter.restore()
+
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
@@ -273,6 +347,7 @@ class EnvelopeCanvas(QWidget):
                 painter.restore()
         painter.setPen(QPen(Qt.GlobalColor.darkGray, 1))
         painter.drawRect(page)
+        self.draw_rulers(painter, scale, page)
         recipient_text = self.recipient_text
         if self.layout_data.postal_code_enabled:
             recipient_text = remove_postal_code_from_text(
@@ -288,8 +363,8 @@ class EnvelopeCanvas(QWidget):
             painter.drawRect(rect)
             painter.setBrush(color)
             painter.drawRect(self.handle_rect(element))
-            font = QFont(getattr(self.layout_data, f"{element}_font_family"),
-                         int(getattr(self.layout_data, f"{element}_font_size")))
+            font = QFont(getattr(self.layout_data, f"{element}_font_family"))
+            font.setPointSizeF(getattr(self.layout_data, f"{element}_font_size") * self.zoom)
             font.setBold(getattr(self.layout_data, f"{element}_bold"))
             font.setItalic(getattr(self.layout_data, f"{element}_italic"))
             painter.setFont(font)
@@ -425,7 +500,8 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
                recipient_min_size: float = 6, sender_enabled: bool = True,
                sender_alignment: str = "center", recipient_alignment: str = "center",
                sender_vertical_alignment: str = "top",
-               recipient_vertical_alignment: str = "center") -> RenderStats:
+               recipient_vertical_alignment: str = "center",
+               label_width: float | None = None, label_height: float | None = None) -> RenderStats:
     writer = QPdfWriter(str(output_path))
     writer.setPageSize(QPageSize(QSizeF(page_width, page_height), QPageSize.Unit.Millimeter))
     writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter)
@@ -433,8 +509,12 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
 
     page_width_points = mm(page_width)
     page_height_points = mm(page_height)
-    label_width = (page_width_points - mm(margin_left * 2) - mm(gap_x * (columns - 1))) / columns
-    label_height = (page_height_points - mm(margin_top * 2) - mm(gap_y * (rows - 1))) / rows
+    label_width_points = (mm(label_width) if label_width is not None else
+                          (page_width_points - mm(margin_left * 2)
+                           - mm(gap_x * (columns - 1))) / columns)
+    label_height_points = (mm(label_height) if label_height is not None else
+                           (page_height_points - mm(margin_top * 2)
+                            - mm(gap_y * (rows - 1))) / rows)
     painter = QPainter(writer)
     painter.setPen(Qt.GlobalColor.black)
     stats = RenderStats()
@@ -450,26 +530,26 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
                 slot = 0
             column = slot % columns
             row = slot // columns
-            x = mm(margin_left + column * (label_width / POINTS_PER_MM + gap_x))
-            y = mm(margin_top + row * (label_height / POINTS_PER_MM + gap_y))
-            label_rect = QRectF(x, y, label_width, label_height)
+            x = mm(margin_left + column * (label_width_points / POINTS_PER_MM + gap_x))
+            y = mm(margin_top + row * (label_height_points / POINTS_PER_MM + gap_y))
+            label_rect = QRectF(x, y, label_width_points, label_height_points)
             if show_guides:
                 painter.save()
                 painter.setPen(QPen(Qt.GlobalColor.gray, 0.5, Qt.PenStyle.DashLine))
                 painter.drawRect(label_rect)
                 painter.restore()
-            sender_height = label_height * sender_height_percent / 100
+            sender_height = label_height_points * sender_height_percent / 100
             sender_rect = QRectF(
                 label_rect.left() + mm(2) + mm(sender_offset_x),
                 label_rect.top() + mm(2) + mm(sender_offset_y),
-                label_width * sender_width / 100,
+                label_width_points * sender_width / 100,
                 sender_height,
             )
             recipient_rect = QRectF(
                 label_rect.left() + mm(2) + mm(recipient_offset_x),
                 label_rect.top() + sender_height + mm(2) + mm(recipient_offset_y),
-                label_width * recipient_width / 100,
-                label_height * recipient_height / 100,
+                label_width_points * recipient_width / 100,
+                label_height_points * recipient_height / 100,
             )
             label_overflow = False
 
@@ -515,6 +595,44 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
             stats.labels += 1
 
     painter.end()
+    return stats
+
+
+def render_test_sheet(output_path: Path, page_width: float, page_height: float,
+                      columns: int, rows: int, margin_left: float,
+                      margin_top: float, gap_x: float, gap_y: float,
+                      label_width: float | None = None,
+                      label_height: float | None = None) -> RenderStats:
+    writer = QPdfWriter(str(output_path))
+    writer.setPageSize(QPageSize(QSizeF(page_width, page_height), QPageSize.Unit.Millimeter))
+    writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter)
+    writer.setResolution(72)
+    painter = QPainter(writer)
+    painter.setPen(QPen(Qt.GlobalColor.gray, 0.5, Qt.PenStyle.DashLine))
+    page_width_points = mm(page_width)
+    page_height_points = mm(page_height)
+    margin_left_points = mm(margin_left)
+    margin_top_points = mm(margin_top)
+    painter.drawLine(margin_left_points, 0, margin_left_points, page_height_points)
+    painter.drawLine(page_width_points - margin_left_points, 0,
+                     page_width_points - margin_left_points, page_height_points)
+    painter.drawLine(0, margin_top_points, page_width_points, margin_top_points)
+    painter.drawLine(0, page_height_points - margin_top_points,
+                     page_width_points, page_height_points - margin_top_points)
+    label_width_points = (mm(label_width) if label_width is not None else
+                          (page_width_points - mm(margin_left * 2)
+                           - mm(gap_x * (columns - 1))) / columns)
+    label_height_points = (mm(label_height) if label_height is not None else
+                           (page_height_points - mm(margin_top * 2)
+                            - mm(gap_y * (rows - 1))) / rows)
+    for row in range(rows):
+        for column in range(columns):
+            x = mm(margin_left + column * (label_width_points / POINTS_PER_MM + gap_x))
+            y = mm(margin_top + row * (label_height_points / POINTS_PER_MM + gap_y))
+            painter.drawRect(QRectF(x, y, label_width_points, label_height_points))
+    painter.end()
+    stats = RenderStats()
+    stats.pages = 1
     return stats
 
 
@@ -1012,7 +1130,7 @@ class PrintOptionsDialog(QDialog):
 class LabelWindow(QMainWindow):
     def __init__(self, directory: Path):
         super().__init__()
-        self.setWindowTitle("Impression d'étiquettes")
+        self.setWindowTitle("Impression d'étiquettes et d'enveloppes")
         self.resize(860, 620)
         self.settings = QSettings("Tik", "ImpressionEtiquettes")
         saved_directory = self.settings.value("csv_directory", "")
@@ -1030,6 +1148,8 @@ class LabelWindow(QMainWindow):
         self.margin_top = self._spin_box(10, 0, 50, 1)
         self.gap_x = self._spin_box(3, 0, 30, 1)
         self.gap_y = self._spin_box(3, 0, 30, 1)
+        self.label_width: float | None = None
+        self.label_height: float | None = None
         self.page_width = 210.0
         self.page_height = 297.0
         self.format_name = "A4 - 2 x 5"
@@ -1125,10 +1245,10 @@ class LabelWindow(QMainWindow):
         self.file_filter.setPlaceholderText("Filtrer les fichiers...")
         self.file_filter.setClearButtonEnabled(True)
         self.file_filter.textChanged.connect(self.filter_files)
-        export_button = QPushButton("Exporter le PDF")
-        export_button.clicked.connect(self.export_pdf)
-        print_button = QPushButton("Imprimer")
-        print_button.clicked.connect(self.print_pdf)
+        self.export_button = QPushButton("Exporter le PDF")
+        self.export_button.clicked.connect(self.export_pdf)
+        self.print_button = QPushButton("Imprimer")
+        self.print_button.clicked.connect(self.print_pdf)
 
         file_menu = self.menuBar().addMenu("Fichier")
         choose_directory_action = file_menu.addAction("Choisir le dossier CSV...")
@@ -1152,8 +1272,6 @@ class LabelWindow(QMainWindow):
         layout_menu = self.menuBar().addMenu("Mise en page")
         self.format_action = layout_menu.addAction("Formats...")
         self.format_action.triggered.connect(self.open_format_settings)
-        self.options_action = layout_menu.addAction("Options...")
-        self.options_action.triggered.connect(self.open_layout_options)
         self.envelope_layout_separator = layout_menu.addSeparator()
         self.envelope_format_menu = layout_menu.addMenu("Format enveloppe")
         self.envelope_format_actions = []
@@ -1178,11 +1296,11 @@ class LabelWindow(QMainWindow):
 
         printer_settings = QHBoxLayout()
         buttons = QHBoxLayout()
-        preview_button = QPushButton("Aperçu")
-        preview_button.clicked.connect(self.preview_pdf)
-        buttons.addWidget(preview_button)
-        buttons.addWidget(export_button)
-        buttons.addWidget(print_button)
+        self.preview_button = QPushButton("Aperçu")
+        self.preview_button.clicked.connect(self.preview_pdf)
+        buttons.addWidget(self.preview_button)
+        buttons.addWidget(self.export_button)
+        buttons.addWidget(self.print_button)
         printer_settings.addStretch()
         printer_settings.addLayout(buttons)
 
@@ -1395,6 +1513,10 @@ class LabelWindow(QMainWindow):
         self.select_all_checkbox.setCheckState(checkbox_state)
         self.select_all_checkbox.blockSignals(False)
         file_count = len(documents)
+        has_selected_csv = file_count > 0
+        self.preview_button.setEnabled(has_selected_csv)
+        self.export_button.setEnabled(has_selected_csv)
+        self.print_button.setEnabled(has_selected_csv)
         label_count = sum(len(document.recipients) for document in documents)
         issue_count = sum(len(document.issues) for document in documents)
         if self.mode.currentIndex() == 1:
@@ -1427,7 +1549,6 @@ class LabelWindow(QMainWindow):
         self.label_mode_action.setChecked(not is_envelope)
         self.envelope_mode_action.setChecked(is_envelope)
         self.format_action.setVisible(not is_envelope)
-        self.options_action.setVisible(not is_envelope)
         self.envelope_layout_separator.setVisible(is_envelope)
         self.envelope_format_menu.menuAction().setVisible(is_envelope)
         self.envelope_formats_action.setVisible(is_envelope)
@@ -1725,6 +1846,8 @@ class LabelWindow(QMainWindow):
         self.margin_top.setValue(values["margin_top"])
         self.gap_x.setValue(values["gap_x"])
         self.gap_y.setValue(values["gap_y"])
+        self.label_width = values.get("label_width")
+        self.label_height = values.get("label_height")
         self.sender_height_percent = values.get("sender_height_percent", 34)
         self.sender_enabled = values.get("sender_enabled", True)
         self.sender_base_size = values.get("sender_base_size", 9)
@@ -1762,6 +1885,8 @@ class LabelWindow(QMainWindow):
         self.margin_top.setValue(selected.margin_top)
         self.gap_x.setValue(selected.gap_x)
         self.gap_y.setValue(selected.gap_y)
+        self.label_width = selected.label_width
+        self.label_height = selected.label_height
         self.sender_height_percent = selected.sender_height_percent
         self.sender_enabled = selected.sender_enabled
         self.sender_base_size = selected.sender_base_size
@@ -1779,6 +1904,8 @@ class LabelWindow(QMainWindow):
         self.sender_italic = selected.sender_italic
         self.sender_alignment = selected.sender_alignment
         self.sender_vertical_alignment = selected.sender_vertical_alignment
+        self.start_column.setValue(selected.start_column)
+        self.start_row.setValue(selected.start_row)
         self.recipient_font_family = selected.recipient_font_family
         self.recipient_font_size = selected.recipient_font_size
         self.recipient_bold = selected.recipient_bold
@@ -1820,10 +1947,13 @@ class LabelWindow(QMainWindow):
             self.recipient_bold, self.recipient_italic,
             self.sender_enabled,
             self.sender_alignment, self.recipient_alignment,
+            self.sender_vertical_alignment, self.recipient_vertical_alignment,
+            self.start_column.value(), self.start_row.value(),
+            self.label_width, self.label_height,
         )
         dialog = FormatSettingsDialog(
             current, self.directory / "formats.json", sample_sender,
-            sample_recipient, self
+            sample_recipient, self, self.print_test_page_format
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1832,8 +1962,28 @@ class LabelWindow(QMainWindow):
         self.apply_format_values(selected)
         self.preset_info.setText(f"Format actif : {selected.name}")
 
-    def create_pdf(self, show_guides: bool | None = None) -> tuple[Path, RenderStats]:
+    def print_test_page_format(self, selected: LabelFormat) -> None:
+        self.apply_format_values(selected)
+        self.print_pdf(test_page_override=True)
+
+    def create_pdf(self, show_guides: bool | None = None,
+                   test_page: bool | None = None) -> tuple[Path, RenderStats]:
         documents = self.selected_documents()
+        if test_page is None:
+            test_page = getattr(self, "_test_page_requested", False)
+        if test_page:
+            file_descriptor, output_name = tempfile.mkstemp(prefix="etiquettes-test-", suffix=".pdf")
+            Path(output_name).unlink(missing_ok=True)
+            os.close(file_descriptor)
+            output = Path(output_name)
+            stats = render_test_sheet(
+                output, self.page_width, self.page_height,
+                self.columns.value(), self.rows.value(),
+                self.margin_left.value(), self.margin_top.value(),
+                self.gap_x.value(), self.gap_y.value(),
+                self.label_width, self.label_height,
+            )
+            return output, stats
         if not documents:
             raise ValueError("Sélectionnez au moins un fichier CSV")
         if show_guides is None:
@@ -1880,7 +2030,8 @@ class LabelWindow(QMainWindow):
                                6, self.sender_enabled,
                                self.sender_alignment, self.recipient_alignment,
                                self.sender_vertical_alignment,
-                               self.recipient_vertical_alignment)
+                               self.recipient_vertical_alignment,
+                               self.label_width, self.label_height)
         return output, stats
 
     @staticmethod
@@ -1922,18 +2073,28 @@ class LabelWindow(QMainWindow):
                 pdf_path.unlink(missing_ok=True)
 
 
-    def print_pdf(self) -> None:
+    def print_pdf(self, test_page_override: bool | None = None) -> None:
         options = PrintOptionsDialog(self)
+        if test_page_override is not None:
+            options.test_page.setChecked(test_page_override)
+            options.test_page.setEnabled(False)
+            options.page_range.setEnabled(False)
         if options.exec() != QDialog.DialogCode.Accepted:
             return
         pdf_path = None
         try:
             test_page = options.test_page.isChecked()
+            self._test_page_requested = test_page
             pdf_path, stats = self.create_pdf(show_guides=test_page)
             printer_name = self.printers.currentData()
             command = ["lp"]
             if printer_name:
                 command.extend(["-d", printer_name])
+            if (self.mode.currentIndex() == 0
+                    and abs(self.page_width - 210) < 0.1
+                    and abs(self.page_height - 297) < 0.1):
+                command.extend(["-o", "media=A4"])
+            command.extend(["-o", "print-scaling=none"])
             command.extend(["-n", str(options.copies.value())])
             page_range = "1" if test_page else options.page_range.text().strip()
             if page_range:
@@ -1963,6 +2124,7 @@ class LabelWindow(QMainWindow):
         except (OSError, ValueError, RuntimeError) as error:
             QMessageBox.warning(self, "Impression impossible", str(error))
         finally:
+            self._test_page_requested = False
             if pdf_path is not None:
                 pdf_path.unlink(missing_ok=True)
 

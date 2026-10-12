@@ -91,9 +91,9 @@ def extract_document(input_path):
                 break
 
         if city_index is not None:
-            adresse = " ".join(recipient_lines[:city_index]).strip()
+            adresse = "\n".join(recipient_lines[:city_index]).strip()
         elif recipient_lines:
-            adresse = " ".join(recipient_lines).strip()
+            adresse = "\n".join(recipient_lines).strip()
 
         rows.append({
             "Destinataire": recipient_name,

@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFontComboBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -84,6 +85,10 @@ class LabelFormat:
     recipient_alignment: str = "center"
     sender_vertical_alignment: str = "top"
     recipient_vertical_alignment: str = "center"
+    start_column: int = 1
+    start_row: int = 1
+    label_width: float | None = None
+    label_height: float | None = None
 
 
 def alignment_flag(value: str, vertical: Qt.AlignmentFlag) -> Qt.AlignmentFlag:
@@ -102,33 +107,51 @@ def vertical_alignment_flag(value: str) -> Qt.AlignmentFlag:
 
 
 class FormatPreview(QWidget):
+    positionChanged = Signal(int, int)
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.format = LabelFormat("Aperçu")
+        self.dragging_start = False
         self.setMinimumSize(300, 360)
 
     def set_format(self, label_format: LabelFormat) -> None:
         self.format = label_format
         self.update()
 
-    def paintEvent(self, event) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    def page_geometry(self) -> tuple[QRectF, float, float, float]:
         page = QRectF(24, 16, self.width() - 48, self.height() - 32)
         scale = min(page.width() / self.format.page_width,
                     page.height() / self.format.page_height)
         page.setWidth(self.format.page_width * scale)
         page.setHeight(self.format.page_height * scale)
         page.moveCenter(QRectF(self.rect()).center())
+        label_width = self.format.label_width
+        if label_width is None:
+            available_width = self.format.page_width - self.format.margin_left * 2
+            label_width = (available_width - self.format.gap_x * (self.format.columns - 1)) / self.format.columns
+        label_height = self.format.label_height
+        if label_height is None:
+            available_height = self.format.page_height - self.format.margin_top * 2
+            label_height = (available_height - self.format.gap_y * (self.format.rows - 1)) / self.format.rows
+        return page, scale, label_width, label_height
+
+    def label_rect(self, column: int, row: int) -> QRectF:
+        page, scale, label_width, label_height = self.page_geometry()
+        x = self.format.margin_left + (column - 1) * (label_width + self.format.gap_x)
+        y = self.format.margin_top + (row - 1) * (label_height + self.format.gap_y)
+        return QRectF(page.left() + x * scale, page.top() + y * scale,
+                      label_width * scale, label_height * scale)
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        page, scale, label_width, label_height = self.page_geometry()
         painter.fillRect(page, Qt.GlobalColor.white)
         painter.setPen(QPen(Qt.GlobalColor.darkGray, 1))
         painter.drawRect(page)
 
-        available_width = self.format.page_width - self.format.margin_left * 2
-        available_height = self.format.page_height - self.format.margin_top * 2
-        label_width = (available_width - self.format.gap_x * (self.format.columns - 1)) / self.format.columns
-        label_height = (available_height - self.format.gap_y * (self.format.rows - 1)) / self.format.rows
         painter.setPen(QPen(Qt.GlobalColor.black, 1))
         for row in range(self.format.rows):
             for column in range(self.format.columns):
@@ -136,6 +159,42 @@ class FormatPreview(QWidget):
                 y = self.format.margin_top + row * (label_height + self.format.gap_y)
                 painter.drawRect(QRectF(page.left() + x * scale, page.top() + y * scale,
                                         label_width * scale, label_height * scale))
+        marker_rect = self.label_rect(self.format.start_column, self.format.start_row)
+        painter.setPen(QPen(Qt.GlobalColor.red, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(marker_rect.adjusted(2, 2, -2, -2))
+        painter.setFont(QFont("DejaVu Sans", max(8, int(marker_rect.height() * 0.4))))
+        painter.drawText(marker_rect, Qt.AlignmentFlag.AlignCenter, "1*")
+
+    def mousePressEvent(self, event) -> None:
+        for row in range(1, self.format.rows + 1):
+            for column in range(1, self.format.columns + 1):
+                if self.label_rect(column, row).contains(event.position()):
+                    self.dragging_start = True
+                    self.format.start_column = column
+                    self.format.start_row = row
+                    self.positionChanged.emit(column, row)
+                    self.update()
+                    event.accept()
+                    return
+        event.ignore()
+
+    def mouseMoveEvent(self, event) -> None:
+        if not self.dragging_start:
+            return
+        for row in range(1, self.format.rows + 1):
+            for column in range(1, self.format.columns + 1):
+                if self.label_rect(column, row).contains(event.position()):
+                    if (column, row) != (self.format.start_column, self.format.start_row):
+                        self.format.start_column = column
+                        self.format.start_row = row
+                        self.positionChanged.emit(column, row)
+                        self.update()
+                    return
+
+    def mouseReleaseEvent(self, event) -> None:
+        self.dragging_start = False
+        event.accept()
 
 
 class PositionCanvas(QWidget):
@@ -469,7 +528,7 @@ class PositionEditorDialog(QDialog):
 class FormatSettingsDialog(QDialog):
     def __init__(self, current: LabelFormat, storage_path: Path,
                  sender_text: str = "Expéditeur", recipient_text: str = "Destinataire",
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, print_test_callback=None):
         super().__init__(parent)
         self.setWindowTitle("Formats d'étiquettes")
         self.resize(820, 560)
@@ -478,6 +537,7 @@ class FormatSettingsDialog(QDialog):
         self.recipient_text = recipient_text
         self.formats = self.load_formats()
         self.current_format = current
+        self.print_test_callback = print_test_callback
 
         self.preset_list = QListWidget()
         self.preset_list.currentItemChanged.connect(self.select_format)
@@ -493,6 +553,20 @@ class FormatSettingsDialog(QDialog):
         self.margin_top = self._number(current.margin_top, 0, 100)
         self.gap_x = self._number(current.gap_x, 0, 100)
         self.gap_y = self._number(current.gap_y, 0, 100)
+        self.label_width = self._number(
+            current.label_width if current.label_width is not None else self._derived_label_width(current), 0.1, 1000
+        )
+        self.label_height = self._number(
+            current.label_height if current.label_height is not None else self._derived_label_height(current), 0.1, 1000
+        )
+        self.margin_right_value = QLabel()
+        self.margin_bottom_value = QLabel()
+        for value_label in (self.margin_right_value, self.margin_bottom_value):
+            value_label.setMinimumWidth(72)
+            value_label.setStyleSheet(
+                "QLabel { background: #eef2f5; border: 1px solid #cbd5dc; "
+                "border-radius: 3px; padding: 4px 7px; }"
+            )
         self.sender_height_percent = current.sender_height_percent
         self.sender_enabled = current.sender_enabled
         self.sender_base_size = current.sender_base_size
@@ -512,24 +586,47 @@ class FormatSettingsDialog(QDialog):
         self.recipient_font_size = current.recipient_font_size
         self.recipient_bold = current.recipient_bold
         self.recipient_italic = current.recipient_italic
+        self.sender_alignment = current.sender_alignment
+        self.recipient_alignment = current.recipient_alignment
+        self.sender_vertical_alignment = current.sender_vertical_alignment
+        self.recipient_vertical_alignment = current.recipient_vertical_alignment
+        self.start_column = current.start_column
+        self.start_row = current.start_row
         self.preview = FormatPreview()
+        self.preview.format.start_column = self.start_column
+        self.preview.format.start_row = self.start_row
+        self.preview.positionChanged.connect(self.set_start_position)
         self.controls = (self.name, self.page_width, self.page_height, self.columns,
-                         self.rows, self.margin_left, self.margin_top, self.gap_x, self.gap_y)
+                 self.rows, self.margin_left, self.margin_top, self.gap_x, self.gap_y,
+                 self.label_width, self.label_height)
         for control in self.controls:
             if hasattr(control, "textChanged"):
                 control.textChanged.connect(self.update_preview)
             else:
                 control.valueChanged.connect(self.update_preview)
 
-        form = QFormLayout()
-        for label, control in (
+        form = QGridLayout()
+        fields = (
             ("Nom", self.name), ("Largeur page (mm)", self.page_width),
             ("Hauteur page (mm)", self.page_height), ("Colonnes", self.columns),
             ("Lignes", self.rows), ("Marge gauche (mm)", self.margin_left),
             ("Marge haut (mm)", self.margin_top), ("Espace horizontal (mm)", self.gap_x),
             ("Espace vertical (mm)", self.gap_y),
-        ):
-            form.addRow(label, control)
+        )
+        for row, (label, control) in enumerate(fields):
+            form.addWidget(QLabel(label), row, 0)
+            form.addWidget(control, row, 1)
+        margin_info = QVBoxLayout()
+        margin_info.addLayout(self._calculated_margin_row("Marge droite (mm)", self.margin_right_value))
+        margin_info.addLayout(self._calculated_margin_row("Marge basse (mm)", self.margin_bottom_value))
+        label_info = QVBoxLayout()
+        label_info.addLayout(self._calculated_margin_row("Largeur étiquette (mm)", self.label_width))
+        label_info.addLayout(self._calculated_margin_row("Hauteur étiquette (mm)", self.label_height))
+        form.addLayout(label_info, 0, 2, 2, 1, Qt.AlignmentFlag.AlignTop)
+        form.addLayout(margin_info, 5, 2, 2, 1, Qt.AlignmentFlag.AlignTop)
+        form.setColumnStretch(0, 1)
+        form.setColumnStretch(1, 0)
+        form.setColumnStretch(2, 1)
 
         self.save_feedback = QLabel()
         self.save_feedback.setVisible(False)
@@ -537,6 +634,9 @@ class FormatSettingsDialog(QDialog):
             "QLabel { background: #e8f5e9; color: #216e39; border: 1px solid #9bd1a5; "
             "border-radius: 4px; padding: 7px 9px; }"
         )
+        self.geometry_feedback = QLabel()
+        self.geometry_feedback.setWordWrap(True)
+        self.geometry_feedback.setStyleSheet("QLabel { color: #a33a2b; padding: 4px 0; }")
         position_button = QPushButton("Modifier la mise en page...")
         position_button.clicked.connect(self.open_position_editor)
         save_button = QPushButton("Enregistrer le format")
@@ -547,11 +647,22 @@ class FormatSettingsDialog(QDialog):
         apply_button.clicked.connect(self.accept)
         cancel_button = QPushButton("Annuler")
         cancel_button.clicked.connect(self.reject)
+        test_page_button = QPushButton("Imprimer une page de test")
+        test_page_button.clicked.connect(self.print_test_page)
+        center_buttons = QHBoxLayout()
+        center_horizontal_button = QPushButton("Centrer horizontalement")
+        center_horizontal_button.clicked.connect(self.center_horizontally)
+        center_vertical_button = QPushButton("Centrer verticalement")
+        center_vertical_button.clicked.connect(self.center_vertically)
+        center_buttons.addWidget(center_horizontal_button)
+        center_buttons.addWidget(center_vertical_button)
 
         editor = QVBoxLayout()
         editor.addLayout(form)
+        editor.addLayout(center_buttons)
         editor.addWidget(position_button)
         editor.addWidget(save_button)
+        editor.addWidget(self.geometry_feedback)
         editor.addWidget(self.save_feedback)
         editor.addStretch()
         editor.addWidget(apply_button)
@@ -565,7 +676,10 @@ class FormatSettingsDialog(QDialog):
         layout = QHBoxLayout(self)
         layout.addLayout(left, 1)
         layout.addLayout(editor, 2)
-        layout.addWidget(self.preview, 2)
+        preview_column = QVBoxLayout()
+        preview_column.addWidget(self.preview, 1)
+        preview_column.addWidget(test_page_button)
+        layout.addLayout(preview_column, 2)
         matching_items = self.preset_list.findItems(current.name, Qt.MatchFlag.MatchExactly)
         if matching_items:
             self.preset_list.setCurrentItem(matching_items[0])
@@ -580,6 +694,23 @@ class FormatSettingsDialog(QDialog):
         control.setSingleStep(1)
         return control
 
+    @staticmethod
+    def _calculated_margin_row(label: str, value: QLabel) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        row.addWidget(value)
+        return row
+
+    @staticmethod
+    def _derived_label_width(label_format: LabelFormat) -> float:
+        return (label_format.page_width - label_format.margin_left * 2
+                - label_format.gap_x * (label_format.columns - 1)) / label_format.columns
+
+    @staticmethod
+    def _derived_label_height(label_format: LabelFormat) -> float:
+        return (label_format.page_height - label_format.margin_top * 2
+                - label_format.gap_y * (label_format.rows - 1)) / label_format.rows
+
     def load_formats(self) -> dict[str, dict]:
         return load_formats(self.storage_path)
 
@@ -590,8 +721,16 @@ class FormatSettingsDialog(QDialog):
         values = self.formats[item.text()]
         self.name.setText(item.text())
         defaults = asdict(LabelFormat(item.text()))
+        defaults = asdict(LabelFormat(item.text()))
         for field in ("page_width", "page_height", "columns", "rows", "margin_left", "margin_top", "gap_x", "gap_y"):
             getattr(self, field).setValue(values.get(field, defaults[field]))
+        selected = LabelFormat(item.text(), **values)
+        self.label_width.setValue(
+            selected.label_width if selected.label_width is not None else self._derived_label_width(selected)
+        )
+        self.label_height.setValue(
+            selected.label_height if selected.label_height is not None else self._derived_label_height(selected)
+        )
         self.sender_height_percent = values.get("sender_height_percent", defaults["sender_height_percent"])
         self.sender_base_size = values.get("sender_base_size", defaults["sender_base_size"])
         self.sender_min_size = values.get("sender_min_size", defaults["sender_min_size"])
@@ -608,6 +747,11 @@ class FormatSettingsDialog(QDialog):
                       "recipient_italic", "sender_alignment", "recipient_alignment",
                       "sender_vertical_alignment", "recipient_vertical_alignment"):
             setattr(self, field, values.get(field, defaults[field]))
+            self.start_column = int(values.get("start_column", defaults["start_column"]))
+            self.start_row = int(values.get("start_row", defaults["start_row"]))
+            self.preview.format.start_column = self.start_column
+            self.preview.format.start_row = self.start_row
+            self.preview.update()
 
     def current_values(self) -> LabelFormat:
         return LabelFormat(
@@ -625,10 +769,49 @@ class FormatSettingsDialog(QDialog):
             self.sender_enabled,
             self.sender_alignment, self.recipient_alignment,
             self.sender_vertical_alignment, self.recipient_vertical_alignment,
+            self.start_column, self.start_row,
+            self.label_width.value(), self.label_height.value(),
         )
 
+    def set_start_position(self, column: int, row: int) -> None:
+        self.start_column = column
+        self.start_row = row
+        self.update_preview()
+
+    def center_horizontally(self) -> None:
+        current = self.current_values()
+        remaining = (current.page_width - current.columns * current.label_width
+                     - (current.columns - 1) * current.gap_x)
+        self.margin_left.setValue(max(0, remaining / 2))
+
+    def center_vertically(self) -> None:
+        current = self.current_values()
+        remaining = (current.page_height - current.rows * current.label_height
+                     - (current.rows - 1) * current.gap_y)
+        self.margin_top.setValue(max(0, remaining / 2))
+
+    def print_test_page(self) -> None:
+        if self.print_test_callback is not None:
+            self.print_test_callback(self.current_values())
+
     def update_preview(self) -> None:
-        self.preview.set_format(self.current_values())
+        current = self.current_values()
+        self.preview.set_format(current)
+        right_space = (current.page_width - current.margin_left
+                       - current.columns * current.label_width
+                       - (current.columns - 1) * current.gap_x)
+        bottom_space = (current.page_height - current.margin_top
+                        - current.rows * current.label_height
+                        - (current.rows - 1) * current.gap_y)
+        self.margin_right_value.setText(f"{right_space:.1f}")
+        self.margin_bottom_value.setText(f"{bottom_space:.1f}")
+        messages = []
+        if right_space < 0:
+            messages.append(f"Largeur dépassée de {-right_space:.1f} mm")
+        if bottom_space < 0:
+            messages.append(f"Hauteur dépassée de {-bottom_space:.1f} mm")
+        self.geometry_feedback.setText(" | ".join(messages))
+        self.geometry_feedback.setVisible(bool(messages))
 
     def open_position_editor(self) -> None:
         dialog = PositionEditorDialog(
