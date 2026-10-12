@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -45,12 +47,75 @@ PRESETS = {
 def load_formats(storage_path: Path) -> dict[str, dict]:
     if storage_path.exists():
         try:
-            formats = json.loads(storage_path.read_text(encoding="utf-8"))
-            if isinstance(formats, dict) and formats:
-                return formats
+            stored_formats = json.loads(storage_path.read_text(encoding="utf-8"))
+            if isinstance(stored_formats, dict):
+                formats = {
+                    name: values
+                    for name, values in (
+                        (_normalise_format(name, values)
+                         for name, values in stored_formats.items())
+                    )
+                    if name is not None and values is not None
+                }
+                if formats:
+                    return formats
         except (OSError, json.JSONDecodeError):
             pass
     return dict(PRESETS)
+
+
+def _normalise_format(name: object, values: object) -> tuple[str | None, dict | None]:
+    if not isinstance(name, str) or not name.strip() or not isinstance(values, dict):
+        return None, None
+    name = name.strip()
+    defaults = asdict(LabelFormat(name))
+    normalised = {}
+    for field, default in defaults.items():
+        if field == "name":
+            continue
+        value = values.get(field, default)
+        try:
+            if isinstance(default, bool):
+                if not isinstance(value, bool):
+                    return None, None
+            elif isinstance(default, int):
+                value = int(value)
+            elif isinstance(default, float):
+                value = float(value)
+                if not math.isfinite(value):
+                    return None, None
+            elif value is not None and not isinstance(value, str):
+                return None, None
+        except (TypeError, ValueError, OverflowError):
+            return None, None
+        normalised[field] = value
+    try:
+        label_format = LabelFormat(name, **normalised)
+    except (TypeError, ValueError):
+        return None, None
+    if label_format.page_width <= 0 or label_format.page_height <= 0:
+        return None, None
+    if label_format.columns < 1 or label_format.rows < 1:
+        return None, None
+    return name, normalised
+
+
+def save_formats(storage_path: Path, formats: dict[str, dict]) -> None:
+    storage_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=storage_path.parent,
+            prefix=f".{storage_path.name}.", suffix=".tmp", delete=False
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            json.dump(formats, temporary_file, indent=2, ensure_ascii=False)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, storage_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 @dataclass
@@ -924,7 +989,7 @@ class FormatSettingsDialog(QDialog):
         self.formats[label_format.name] = asdict(label_format) | {"name": None}
         self.formats[label_format.name].pop("name", None)
         try:
-            self.storage_path.write_text(json.dumps(self.formats, indent=2), encoding="utf-8")
+            save_formats(self.storage_path, self.formats)
         except OSError as error:
             QMessageBox.warning(self, "Enregistrement impossible", str(error))
             return
@@ -944,7 +1009,11 @@ class FormatSettingsDialog(QDialog):
             )
             return
         self.formats.pop(item.text(), None)
-        self.storage_path.write_text(json.dumps(self.formats, indent=2), encoding="utf-8")
+        try:
+            save_formats(self.storage_path, self.formats)
+        except OSError as error:
+            QMessageBox.warning(self, "Suppression impossible", str(error))
+            return
         self.preset_list.takeItem(self.preset_list.row(item))
 
     def format_result(self) -> LabelFormat:

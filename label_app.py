@@ -9,6 +9,7 @@ import os
 import math
 import json
 import re
+import csv
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -45,7 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from label_printer import CsvDocument, find_csv_files, load_csv
-from format_settings import FormatSettingsDialog, LabelFormat, load_formats
+from format_settings import FormatSettingsDialog, LabelFormat, load_formats, save_formats
 
 
 POINTS_PER_MM = 72 / 25.4
@@ -1455,9 +1456,7 @@ class LabelWindow(QMainWindow):
                 for name, values in imported.items():
                     if isinstance(name, str) and isinstance(values, dict):
                         self.available_formats[name] = values
-                self.format_storage_path.write_text(
-                    json.dumps(self.available_formats, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
+                save_formats(self.format_storage_path, self.available_formats)
                 self.available_formats = load_formats(self.format_storage_path)
             QMessageBox.information(self, "Import terminé", f"{len(imported)} format(s) importé(s).")
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
@@ -1579,8 +1578,10 @@ class LabelWindow(QMainWindow):
 
     def load_printers(self) -> None:
         try:
-            result = subprocess.run(["lpstat", "-a"], capture_output=True, text=True, check=False)
-        except OSError:
+            result = subprocess.run(
+                ["lpstat", "-a"], capture_output=True, text=True, check=False, timeout=5
+            )
+        except (OSError, subprocess.TimeoutExpired):
             result = None
         if result is None or result.returncode:
             self.printers.addItem("Imprimante par défaut", "")
@@ -1603,7 +1604,11 @@ class LabelWindow(QMainWindow):
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
             if item.checkState() == Qt.CheckState.Checked:
-                documents.append(load_csv(Path(item.data(Qt.ItemDataRole.UserRole))))
+                path = Path(item.data(Qt.ItemDataRole.UserRole))
+                try:
+                    documents.append(load_csv(path))
+                except (OSError, UnicodeError, ValueError, csv.Error) as error:
+                    raise ValueError(f"Impossible de lire {path.name} : {error}") from error
         return documents
 
     def update_summary(self) -> None:
@@ -1620,7 +1625,7 @@ class LabelWindow(QMainWindow):
                 continue
             try:
                 documents.append(load_csv(Path(item.data(Qt.ItemDataRole.UserRole))))
-            except ValueError:
+            except (OSError, UnicodeError, ValueError, csv.Error):
                 continue
         if active_count and active_selected_count == active_count:
             checkbox_state = Qt.CheckState.Checked
@@ -2089,13 +2094,17 @@ class LabelWindow(QMainWindow):
             Path(output_name).unlink(missing_ok=True)
             os.close(file_descriptor)
             output = Path(output_name)
-            stats = render_test_sheet(
-                output, self.page_width, self.page_height,
-                self.columns.value(), self.rows.value(),
-                self.margin_left.value(), self.margin_top.value(),
-                self.gap_x.value(), self.gap_y.value(),
-                self.label_width, self.label_height,
-            )
+            try:
+                stats = render_test_sheet(
+                    output, self.page_width, self.page_height,
+                    self.columns.value(), self.rows.value(),
+                    self.margin_left.value(), self.margin_top.value(),
+                    self.gap_x.value(), self.gap_y.value(),
+                    self.label_width, self.label_height,
+                )
+            except Exception:
+                output.unlink(missing_ok=True)
+                raise
             return output, stats
         if not documents:
             raise ValueError("Sélectionnez au moins un fichier CSV")
@@ -2105,48 +2114,52 @@ class LabelWindow(QMainWindow):
         Path(output_name).unlink(missing_ok=True)
         os.close(file_descriptor)
         output = Path(output_name)
-        if self.mode.currentIndex() == 1:
-            stats = render_envelope_pdf(
-                documents, output, (self.envelope_page_width, self.envelope_page_height),
-                self.envelope_x.value(), self.envelope_y.value(),
-                self.envelope_width.value(), self.envelope_height.value()
-                , show_guides, self.envelope_sender_x,
-                self.envelope_sender_y, self.envelope_sender_width,
-                self.envelope_sender_height, self.envelope_sender_enabled,
-                self.envelope_sender_font_family,
-                self.envelope_sender_font_size, self.envelope_sender_bold,
-                self.envelope_sender_italic, self.envelope_recipient_font_family,
-                self.envelope_recipient_font_size, self.envelope_recipient_bold,
-                self.envelope_recipient_italic,
-                self.envelope_sender_alignment, self.envelope_recipient_alignment,
-                self.envelope_sender_vertical_alignment,
-                self.envelope_recipient_vertical_alignment,
-                self.envelope_postal_code_enabled, self.envelope_postal_code_x,
-                self.envelope_postal_code_y, self.envelope_postal_code_width,
-                self.envelope_postal_code_height,
-                self.envelope_postal_code_offset_x,
-                self.envelope_postal_code_offset_y,
-            )
-        else:
-            stats = render_pdf(documents, output, self.columns.value(), self.rows.value(),
-                               self.margin_left.value(), self.margin_top.value(),
-                               self.gap_x.value(), self.gap_y.value(),
-                               self.start_column.value(), self.start_row.value(),
-                               self.page_width, self.page_height,
-                               show_guides, self.sender_height_percent,
-                               self.sender_base_size, self.sender_min_size,
-                               self.sender_offset_x, self.sender_offset_y,
-                               self.recipient_offset_x, self.recipient_offset_y,
-                               self.sender_width, self.recipient_width, self.recipient_height,
-                               self.sender_font_family, self.sender_font_size,
-                               self.sender_bold, self.sender_italic,
-                               self.recipient_font_family, self.recipient_font_size,
-                               self.recipient_bold, self.recipient_italic,
-                               6, self.sender_enabled,
-                               self.sender_alignment, self.recipient_alignment,
-                               self.sender_vertical_alignment,
-                               self.recipient_vertical_alignment,
-                               self.label_width, self.label_height)
+        try:
+            if self.mode.currentIndex() == 1:
+                stats = render_envelope_pdf(
+                    documents, output, (self.envelope_page_width, self.envelope_page_height),
+                    self.envelope_x.value(), self.envelope_y.value(),
+                    self.envelope_width.value(), self.envelope_height.value()
+                    , show_guides, self.envelope_sender_x,
+                    self.envelope_sender_y, self.envelope_sender_width,
+                    self.envelope_sender_height, self.envelope_sender_enabled,
+                    self.envelope_sender_font_family,
+                    self.envelope_sender_font_size, self.envelope_sender_bold,
+                    self.envelope_sender_italic, self.envelope_recipient_font_family,
+                    self.envelope_recipient_font_size, self.envelope_recipient_bold,
+                    self.envelope_recipient_italic,
+                    self.envelope_sender_alignment, self.envelope_recipient_alignment,
+                    self.envelope_sender_vertical_alignment,
+                    self.envelope_recipient_vertical_alignment,
+                    self.envelope_postal_code_enabled, self.envelope_postal_code_x,
+                    self.envelope_postal_code_y, self.envelope_postal_code_width,
+                    self.envelope_postal_code_height,
+                    self.envelope_postal_code_offset_x,
+                    self.envelope_postal_code_offset_y,
+                )
+            else:
+                stats = render_pdf(documents, output, self.columns.value(), self.rows.value(),
+                                   self.margin_left.value(), self.margin_top.value(),
+                                   self.gap_x.value(), self.gap_y.value(),
+                                   self.start_column.value(), self.start_row.value(),
+                                   self.page_width, self.page_height,
+                                   show_guides, self.sender_height_percent,
+                                   self.sender_base_size, self.sender_min_size,
+                                   self.sender_offset_x, self.sender_offset_y,
+                                   self.recipient_offset_x, self.recipient_offset_y,
+                                   self.sender_width, self.recipient_width, self.recipient_height,
+                                   self.sender_font_family, self.sender_font_size,
+                                   self.sender_bold, self.sender_italic,
+                                   self.recipient_font_family, self.recipient_font_size,
+                                   self.recipient_bold, self.recipient_italic,
+                                   6, self.sender_enabled,
+                                   self.sender_alignment, self.recipient_alignment,
+                                   self.sender_vertical_alignment,
+                                   self.recipient_vertical_alignment,
+                                   self.label_width, self.label_height)
+        except Exception:
+            output.unlink(missing_ok=True)
+            raise
         return output, stats
 
     @staticmethod
@@ -2231,12 +2244,14 @@ class LabelWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes,
             ) != QMessageBox.StandardButton.Yes:
                 return
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                command, capture_output=True, text=True, check=False, timeout=30
+            )
             if result.returncode:
                 raise RuntimeError(result.stderr.strip() or "CUPS a refusé le document")
             verb = "de test envoyée(s)" if test_page else "envoyée(s)"
             QMessageBox.information(self, "Impression envoyée", self.render_summary(stats, verb))
-        except (OSError, ValueError, RuntimeError) as error:
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             QMessageBox.warning(self, "Impression impossible", str(error))
         finally:
             self._test_page_requested = False
