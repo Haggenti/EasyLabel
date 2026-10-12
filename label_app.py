@@ -852,6 +852,7 @@ class EnvelopeEditorDialog(QDialog):
         self.canvas_window.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         canvas_window_layout = QVBoxLayout(self.canvas_window)
         canvas_scroll = QScrollArea()
+        self.canvas_scroll = canvas_scroll
         canvas_scroll.setWidgetResizable(False)
         canvas_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         canvas_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -937,8 +938,20 @@ class EnvelopeEditorDialog(QDialog):
         self.canvas_window.show()
         self.canvas_window.raise_()
         self.canvas_window.activateWindow()
+        QTimer.singleShot(0, self.fit_canvas_to_window)
         QTimer.singleShot(0, self.focus_canvas_window)
         self.open_canvas_button.setEnabled(False)
+
+    def fit_canvas_to_window(self) -> None:
+        viewport = self.canvas_scroll.viewport().size()
+        page_width = self.layout_data.page_width * self.canvas.screen_scale()
+        page_height = self.layout_data.page_height * self.canvas.screen_scale()
+        available_width = viewport.width() - self.canvas.BASE_MARGIN * 2
+        available_height = viewport.height() - self.canvas.BASE_MARGIN * 2
+        if page_width <= 0 or page_height <= 0:
+            return
+        fit_zoom = min(available_width / page_width, available_height / page_height)
+        self.canvas.set_zoom(max(0.5, min(5.0, fit_zoom)))
 
     def focus_canvas_window(self) -> None:
         if self.canvas_window.isVisible():
@@ -1151,6 +1164,7 @@ class EnvelopeFormatDialog(QDialog):
         name = self.name.text().strip()
         if not name:
             return
+        self.current_layout = EnvelopeLayout(**asdict(self.current_layout))
         self.formats[name] = asdict(self.current_layout)
         self.active_name = name
         self.refresh_list(name)
@@ -1859,6 +1873,7 @@ class LabelWindow(QMainWindow):
             return
         name, layout_data, formats = dialog.format_result()
         self.envelope_presets = formats
+        self.envelope_preset_name = name
         self.save_envelope_presets()
         self.refresh_envelope_preset_controls(name)
         self.save_envelope_layout(layout_data)

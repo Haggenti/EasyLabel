@@ -12,6 +12,7 @@ from PySide6.QtGui import QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QApplication,
     QDialog,
     QDoubleSpinBox,
     QFontComboBox,
@@ -285,7 +286,7 @@ class PositionCanvas(QWidget):
         self.drag_start = None
         self.original_offset = (0.0, 0.0)
         self.original_size = (0.0, 0.0)
-        self.zoom = 1.0
+        self.zoom = 2.0
         self.setMinimumSize(560, 360)
         self.resize(self.canvas_size())
 
@@ -497,8 +498,13 @@ class PositionEditorDialog(QDialog):
                  recipient_text: str = "Destinataire", parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Ajuster les positions")
-        self.resize(640, 460)
         self.canvas = PositionCanvas(label_format, sender_text, recipient_text, self)
+        _, page = self.canvas.scale_and_page()
+        initial_width = max(640, round(page.width() + 32))
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            initial_width = min(initial_width, screen.availableGeometry().width() - 24)
+        self.resize(initial_width, 860)
         self.sender_height = self._number(label_format.sender_height_percent, 10, 70)
         self.sender_enabled = QCheckBox("Afficher l’expéditeur")
         self.sender_enabled.setChecked(label_format.sender_enabled)
@@ -537,7 +543,7 @@ class PositionEditorDialog(QDialog):
         instructions = QLabel("Faites glisser les blocs Expéditeur et Destinataire dans l'étiquette.")
         dpi_label = QLabel(f"DPI : {self.canvas.screen_dpi():.0f}")
         zoom_buttons = []
-        zoom_value = QLabel("x1")
+        zoom_value = QLabel("x2")
         for level in PositionCanvas.ZOOM_LEVELS:
             button = QPushButton(f"x{level:g}".replace(".", ","))
             button.setCheckable(True)
@@ -545,7 +551,7 @@ class PositionEditorDialog(QDialog):
             zoom_buttons.append(button)
         self.zoom_buttons = zoom_buttons
         self.zoom_value = zoom_value
-        zoom_buttons[0].setChecked(True)
+        zoom_buttons[-1].setChecked(True)
         zoom_controls = QHBoxLayout()
         zoom_controls.addWidget(dpi_label)
         zoom_controls.addWidget(QLabel("Zoom"))
@@ -570,20 +576,20 @@ class PositionEditorDialog(QDialog):
         settings.addRow(self.sender_enabled)
         settings.addRow("Hauteur expéditeur (%)", self.sender_height)
         settings.addRow("Police expéditeur", self.sender_font)
-        sender_style = QHBoxLayout()
-        sender_style.addWidget(self.sender_size)
-        sender_style.addWidget(self.sender_bold)
-        sender_style.addWidget(self.sender_italic)
-        sender_style.addWidget(self.sender_alignment)
-        sender_style.addWidget(self.sender_vertical_alignment)
+        sender_style = QGridLayout()
+        sender_style.addWidget(self.sender_size, 0, 0)
+        sender_style.addWidget(self.sender_bold, 0, 1)
+        sender_style.addWidget(self.sender_italic, 0, 2)
+        sender_style.addWidget(self.sender_alignment, 1, 0)
+        sender_style.addWidget(self.sender_vertical_alignment, 1, 1)
         settings.addRow("Style expéditeur", sender_style)
         settings.addRow("Police destinataire", self.recipient_font)
-        recipient_style = QHBoxLayout()
-        recipient_style.addWidget(self.recipient_size)
-        recipient_style.addWidget(self.recipient_bold)
-        recipient_style.addWidget(self.recipient_italic)
-        recipient_style.addWidget(self.recipient_alignment)
-        recipient_style.addWidget(self.recipient_vertical_alignment)
+        recipient_style = QGridLayout()
+        recipient_style.addWidget(self.recipient_size, 0, 0)
+        recipient_style.addWidget(self.recipient_bold, 0, 1)
+        recipient_style.addWidget(self.recipient_italic, 0, 2)
+        recipient_style.addWidget(self.recipient_alignment, 1, 0)
+        recipient_style.addWidget(self.recipient_vertical_alignment, 1, 1)
         settings.addRow("Style destinataire", recipient_style)
         layout.addLayout(settings)
         layout.addLayout(zoom_controls)
