@@ -1113,15 +1113,12 @@ class PrintOptionsDialog(QDialog):
         self.copies.setRange(1, 99)
         self.page_range = QLineEdit()
         self.page_range.setPlaceholderText("Toutes les pages")
-        self.test_page = QCheckBox("Imprimer une page de test avec les contours")
-        self.test_page.toggled.connect(self.update_test_page)
 
         grid = QGridLayout()
         grid.addWidget(QLabel("Nombre de copies"), 0, 0)
         grid.addWidget(self.copies, 0, 1)
         grid.addWidget(QLabel("Pages à imprimer"), 1, 0)
         grid.addWidget(self.page_range, 1, 1)
-        grid.addWidget(self.test_page, 2, 0, 1, 2)
         cancel_button = QPushButton("Annuler")
         cancel_button.clicked.connect(self.reject)
         print_button = QPushButton("Imprimer")
@@ -1134,13 +1131,8 @@ class PrintOptionsDialog(QDialog):
         layout.addLayout(grid)
         layout.addLayout(buttons)
 
-    def update_test_page(self, checked: bool) -> None:
-        self.page_range.setEnabled(not checked)
-        if checked:
-            self.page_range.clear()
-
     def validate_and_accept(self) -> None:
-        if self.test_page.isChecked() or self.parse_page_range(self.page_range.text()) is not None:
+        if self.parse_page_range(self.page_range.text()) is not None:
             self.accept()
             return
         QMessageBox.warning(
@@ -1292,13 +1284,18 @@ class LabelWindow(QMainWindow):
         self.export_button = QPushButton("Exporter le PDF")
         self.export_button.clicked.connect(self.export_pdf)
         self.print_button = QPushButton("Imprimer")
-        self.print_button.clicked.connect(self.print_pdf)
+        self.print_button.clicked.connect(lambda checked=False: self.print_pdf())
 
         file_menu = self.menuBar().addMenu("Fichier")
         choose_directory_action = file_menu.addAction("Choisir le dossier CSV...")
         choose_directory_action.triggered.connect(self.choose_directory)
         self.directory_action = file_menu.addAction(str(self.directory))
         self.directory_action.setEnabled(False)
+        file_menu.addSeparator()
+        export_formats_action = file_menu.addAction("Exporter les formats...")
+        export_formats_action.triggered.connect(self.export_formats)
+        import_formats_action = file_menu.addAction("Importer des formats...")
+        import_formats_action.triggered.connect(self.import_formats)
 
         mode_menu = self.menuBar().addMenu("Mode")
         mode_group = QActionGroup(self)
@@ -1326,6 +1323,10 @@ class LabelWindow(QMainWindow):
             printer_group.addAction(action)
             self.printer_actions.append(action)
         self.printers.currentIndexChanged.connect(self.update_printer_menu)
+
+        about_menu = self.menuBar().addMenu("À propos")
+        about_action = about_menu.addAction("À propos de l'application")
+        about_action.triggered.connect(self.show_about)
 
         printer_settings = QHBoxLayout()
         buttons = QHBoxLayout()
@@ -1377,6 +1378,69 @@ class LabelWindow(QMainWindow):
             self.apply_preset(next(iter(self.available_formats)))
         self.restore_envelope_layout()
         self.load_directory_files()
+
+    def show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "À propos",
+            "Tik - Impression d'étiquettes et d'enveloppes\n\n"
+            "Pour le Syndicat SUD\n\n"
+            "Par joe - 2026",
+        )
+
+    def export_formats(self) -> None:
+        mode = "envelopes" if self.mode.currentIndex() == 1 else "labels"
+        default_name = "formats-enveloppes.json" if mode == "envelopes" else "formats-etiquettes.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exporter les formats", str(self.directory / default_name),
+            "Fichiers JSON (*.json)"
+        )
+        if not path:
+            return
+        formats = self.envelope_presets if mode == "envelopes" else self.available_formats
+        payload = {"type": "tik-formats", "version": 1, "mode": mode, "formats": formats}
+        try:
+            Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as error:
+            QMessageBox.warning(self, "Export impossible", str(error))
+            return
+        QMessageBox.information(self, "Export terminé", f"Formats exportés dans :\n{path}")
+
+    def import_formats(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Importer des formats", str(self.directory),
+            "Fichiers JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            if (not isinstance(payload, dict) or payload.get("type") != "tik-formats"
+                    or payload.get("version") != 1 or not isinstance(payload.get("formats"), dict)):
+                raise ValueError("Ce fichier ne contient pas un export de formats valide.")
+            mode = "envelopes" if self.mode.currentIndex() == 1 else "labels"
+            if payload.get("mode") != mode:
+                expected = "enveloppes" if mode == "envelopes" else "étiquettes"
+                raise ValueError(f"Ce fichier contient des formats pour les {payload.get('mode')}, pas pour les {expected}.")
+            imported = payload["formats"]
+            if mode == "envelopes":
+                defaults = asdict(EnvelopeLayout())
+                for name, values in imported.items():
+                    if isinstance(name, str) and isinstance(values, dict):
+                        self.envelope_presets[name] = asdict(EnvelopeLayout(**{**defaults, **values}))
+                self.save_envelope_presets()
+                self.refresh_envelope_preset_controls(self.envelope_preset_name)
+            else:
+                for name, values in imported.items():
+                    if isinstance(name, str) and isinstance(values, dict):
+                        self.available_formats[name] = values
+                self.format_storage_path.write_text(
+                    json.dumps(self.available_formats, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                self.available_formats = load_formats(self.format_storage_path)
+            QMessageBox.information(self, "Import terminé", f"{len(imported)} format(s) importé(s).")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            QMessageBox.warning(self, "Import impossible", str(error))
 
     @staticmethod
     def _spin_box(value: int, minimum: int, maximum: int, step: int = 1) -> QSpinBox:
@@ -1471,7 +1535,8 @@ class LabelWindow(QMainWindow):
         query = text.strip().casefold()
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
-            item.setHidden(bool(query) and query not in item.text().casefold())
+            file_name = Path(item.data(Qt.ItemDataRole.UserRole)).name.casefold()
+            item.setHidden(bool(query) and query not in file_name)
         self.update_summary()
 
     def show_file_context_menu(self, position) -> None:
@@ -2105,14 +2170,14 @@ class LabelWindow(QMainWindow):
     def print_pdf(self, test_page_override: bool | None = None) -> None:
         options = PrintOptionsDialog(self)
         if test_page_override is not None:
-            options.test_page.setChecked(test_page_override)
-            options.test_page.setEnabled(False)
+            if test_page_override:
+                options.page_range.setText("1")
             options.page_range.setEnabled(False)
         if options.exec() != QDialog.DialogCode.Accepted:
             return
         pdf_path = None
         try:
-            test_page = options.test_page.isChecked()
+            test_page = bool(test_page_override)
             self._test_page_requested = test_page
             pdf_path, stats = self.create_pdf(show_guides=test_page)
             printer_name = self.printers.currentData()

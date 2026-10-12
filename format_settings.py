@@ -200,6 +200,8 @@ class FormatPreview(QWidget):
 
 class PositionCanvas(QWidget):
     ZOOM_LEVELS = (1.0, 1.5, 2.0)
+    LOGICAL_WIDTH = 100
+    LOGICAL_HEIGHT = 60
 
     def __init__(self, label_format: LabelFormat, sender_text: str = "Expéditeur",
                  recipient_text: str = "Destinataire", parent: QWidget | None = None):
@@ -227,8 +229,25 @@ class PositionCanvas(QWidget):
 
     def scale_and_page(self) -> tuple[float, QRectF]:
         scale = self.screen_dpi() / 25.4 * self.zoom
-        page = QRectF(40, 40, 100 * scale, 60 * scale)
+        width_mm, height_mm = self.label_dimensions()
+        page = QRectF(40, 40, width_mm * scale, height_mm * scale)
         return scale, page
+
+    def label_dimensions(self) -> tuple[float, float]:
+        width = self.format.label_width
+        height = self.format.label_height
+        if width is None:
+            width = ((self.format.page_width - self.format.margin_left * 2
+                      - self.format.gap_x * (self.format.columns - 1))
+                     / self.format.columns)
+        if height is None:
+            height = ((self.format.page_height - self.format.margin_top * 2
+                       - self.format.gap_y * (self.format.rows - 1))
+                      / self.format.rows)
+        return width, height
+
+    def logical_scales(self, page: QRectF) -> tuple[float, float]:
+        return page.width() / self.LOGICAL_WIDTH, page.height() / self.LOGICAL_HEIGHT
 
     def canvas_size(self) -> QSize:
         _, page = self.scale_and_page()
@@ -245,16 +264,17 @@ class PositionCanvas(QWidget):
         self.update()
 
     def geometry_for(self, element: str) -> QRectF:
-        scale, origin = self.scale_and_page()
+        _, origin = self.scale_and_page()
+        scale_x, scale_y = self.logical_scales(origin)
         if element == "sender":
             sender_height = max(10, min(28, self.format.sender_height_percent * 0.5))
-            return QRectF(origin.left() + (2 + self.format.sender_offset_x) * scale,
-                          origin.top() + (6 + self.format.sender_offset_y) * scale,
-                          self.format.sender_width * scale, sender_height * scale)
-        return QRectF(origin.left() + (2 + self.format.recipient_offset_x) * scale,
-                      origin.top() + (22 + self.format.recipient_offset_y) * scale,
-                      self.format.recipient_width * scale,
-                      self.format.recipient_height * 0.6 * scale)
+            return QRectF(origin.left() + (2 + self.format.sender_offset_x) * scale_x,
+                          origin.top() + (6 + self.format.sender_offset_y) * scale_y,
+                          self.format.sender_width * scale_x, sender_height * scale_y)
+        return QRectF(origin.left() + (2 + self.format.recipient_offset_x) * scale_x,
+                      origin.top() + (22 + self.format.recipient_offset_y) * scale_y,
+                      self.format.recipient_width * scale_x,
+                      self.format.recipient_height * 0.6 * scale_y)
 
     def base_geometry(self, element: str) -> tuple[float, float, float, float]:
         if element == "sender":
@@ -269,14 +289,15 @@ class PositionCanvas(QWidget):
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
-        scale, page = self.scale_and_page()
+        _, page = self.scale_and_page()
+        scale_x, scale_y = self.logical_scales(page)
         painter.fillRect(page, Qt.GlobalColor.white)
         painter.setPen(QPen(Qt.GlobalColor.darkGray, 1))
         painter.drawRect(page)
         painter.setPen(QPen(Qt.GlobalColor.lightGray, 1))
-        for x in range(0, 101, 2):
-            for y in range(0, 61, 2):
-                painter.drawPoint(page.left() + x * scale, page.top() + y * scale)
+        for x in range(0, self.LOGICAL_WIDTH + 1, 2):
+            for y in range(0, self.LOGICAL_HEIGHT + 1, 2):
+                painter.drawPoint(page.left() + x * scale_x, page.top() + y * scale_y)
         for element, color, text in (("sender", Qt.GlobalColor.darkBlue, "Expéditeur"),
                                      ("recipient", Qt.GlobalColor.darkGreen, "Destinataire")):
             if element == "sender" and not self.format.sender_enabled:
@@ -342,15 +363,16 @@ class PositionCanvas(QWidget):
     def mouseMoveEvent(self, event) -> None:
         if not self.active or self.drag_start is None:
             return
-        scale, _ = self.scale_and_page()
+        _, page = self.scale_and_page()
+        scale_x, scale_y = self.logical_scales(page)
         delta = event.position() - self.drag_start
         base_x, base_y, element_width, element_height = self.base_geometry(self.active)
         if self.drag_mode == "resize":
             original_width, original_height = self.original_size
-            new_width = self.snap_size(original_width + delta.x() / scale)
-            new_height = self.snap_size(original_height + delta.y() / scale)
-            new_width = max(30, min(100 - base_x, new_width))
-            new_height = max(10, min(60 - base_y, new_height))
+            new_width = self.snap_size(original_width + delta.x() / scale_x)
+            new_height = self.snap_size(original_height + delta.y() / scale_y)
+            new_width = max(30, min(self.LOGICAL_WIDTH - base_x, new_width))
+            new_height = max(10, min(self.LOGICAL_HEIGHT - base_y, new_height))
             if self.active == "sender":
                 self.format.sender_width = new_width
                 self.format.sender_height_percent = new_height * 2
@@ -360,12 +382,12 @@ class PositionCanvas(QWidget):
             self.clamp_offsets()
             self.update()
             return
-        new_x = self.original_offset[0] + delta.x() / scale
-        new_y = self.original_offset[1] + delta.y() / scale
+        new_x = self.original_offset[0] + delta.x() / scale_x
+        new_y = self.original_offset[1] + delta.y() / scale_y
         new_x = self.snap_size(new_x)
         new_y = self.snap_size(new_y)
-        new_x = max(-base_x, min(new_x, 100 - base_x - element_width))
-        new_y = max(-base_y, min(new_y, 60 - base_y - element_height))
+        new_x = max(-base_x, min(new_x, self.LOGICAL_WIDTH - base_x - element_width))
+        new_y = max(-base_y, min(new_y, self.LOGICAL_HEIGHT - base_y - element_height))
         setattr(self.format, f"{self.active}_offset_x", new_x)
         setattr(self.format, f"{self.active}_offset_y", new_y)
         self.update()
@@ -383,9 +405,9 @@ class PositionCanvas(QWidget):
         for element in ("sender", "recipient"):
             base_x, base_y, element_width, element_height = self.base_geometry(element)
             offset_x = max(-base_x, min(getattr(self.format, f"{element}_offset_x"),
-                                       100 - base_x - element_width))
+                                       self.LOGICAL_WIDTH - base_x - element_width))
             offset_y = max(-base_y, min(getattr(self.format, f"{element}_offset_y"),
-                                       60 - base_y - element_height))
+                                       self.LOGICAL_HEIGHT - base_y - element_height))
             setattr(self.format, f"{element}_offset_x", offset_x)
             setattr(self.format, f"{element}_offset_y", offset_y)
 

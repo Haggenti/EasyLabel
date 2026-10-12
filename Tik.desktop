@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Tik - Impression d'etiquettes
+Comment=Impression d'etiquettes et d'enveloppes
+Path=/home/joe/Documents/PlatformIO/Projects/Tik
+Exec=python3 /home/joe/Documents/PlatformIO/Projects/Tik/label_app.py
+Terminal=false
+Categories=Office;Printing;
+StartupNotify=true

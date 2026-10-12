@@ -163,7 +163,6 @@ class FormatTests(unittest.TestCase):
         window.create_pdf = lambda show_guides: (output, RenderStats())
         options = Mock()
         options.exec.return_value = QDialog.DialogCode.Accepted
-        options.test_page.isChecked.return_value = False
         options.copies.value.return_value = 1
         options.page_range.text.return_value = ""
         with patch("label_app.subprocess.run", side_effect=OSError("test")):
@@ -180,7 +179,6 @@ class FormatTests(unittest.TestCase):
         window.create_pdf = lambda show_guides: (output, RenderStats())
         options = Mock()
         options.exec.return_value = QDialog.DialogCode.Accepted
-        options.test_page.isChecked.return_value = False
         options.copies.value.return_value = 3
         options.page_range.text.return_value = "2-4"
         result = Mock(returncode=0)
@@ -195,13 +193,37 @@ class FormatTests(unittest.TestCase):
         self.assertFalse(output.exists())
         window.close()
 
-    def test_print_options_dialog_limits_test_page_to_first_page(self):
+    def test_print_options_dialog_page_range_is_enabled(self):
         dialog = PrintOptionsDialog()
-        dialog.test_page.setChecked(True)
-        self.assertFalse(dialog.page_range.isEnabled())
-        dialog.test_page.setChecked(False)
         self.assertTrue(dialog.page_range.isEnabled())
         dialog.close()
+
+    def test_csv_print_button_does_not_enter_test_page_mode(self):
+        window = LabelWindow(Path("csv"))
+        window.print_button.setEnabled(True)
+        with patch.object(window, "print_pdf") as print_pdf:
+            window.print_button.click()
+        print_pdf.assert_called_once_with()
+        window.close()
+
+    def test_file_filter_only_matches_file_name(self):
+        window = LabelWindow(Path("csv"))
+        window.filter_files("29")
+        visible_names = [
+            window.file_list.item(index).text()
+            for index in range(window.file_list.count())
+            if not window.file_list.item(index).isHidden()
+        ]
+        self.assertEqual(visible_names, [])
+        window.filter_files("12")
+        visible_names = [
+            window.file_list.item(index).text()
+            for index in range(window.file_list.count())
+            if not window.file_list.item(index).isHidden()
+        ]
+        self.assertTrue(visible_names)
+        self.assertTrue(all("12" in name.casefold() for name in visible_names))
+        window.close()
 
     def test_page_range_parser_accepts_common_ranges(self):
         self.assertEqual(PrintOptionsDialog.parse_page_range("1"), [1])
