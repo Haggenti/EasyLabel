@@ -43,13 +43,14 @@ PRESETS = {
 
 
 def load_formats(storage_path: Path) -> dict[str, dict]:
-    formats = dict(PRESETS)
     if storage_path.exists():
         try:
-            formats.update(json.loads(storage_path.read_text(encoding="utf-8")))
+            formats = json.loads(storage_path.read_text(encoding="utf-8"))
+            if isinstance(formats, dict) and formats:
+                return formats
         except (OSError, json.JSONDecodeError):
             pass
-    return formats
+    return dict(PRESETS)
 
 
 @dataclass
@@ -935,8 +936,12 @@ class FormatSettingsDialog(QDialog):
 
     def delete_format(self) -> None:
         item = self.preset_list.currentItem()
-        if item is None or item.text() in PRESETS:
-            QMessageBox.information(self, "Format protégé", "Les formats prédéfinis ne peuvent pas être supprimés.")
+        if item is None:
+            return
+        if len(self.formats) <= 1:
+            QMessageBox.information(
+                self, "Dernier format", "Il doit rester au moins un format enregistré."
+            )
             return
         self.formats.pop(item.text(), None)
         self.storage_path.write_text(json.dumps(self.formats, indent=2), encoding="utf-8")

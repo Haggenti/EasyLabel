@@ -13,12 +13,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QPoint, QPointF, QSettings, QRectF, QSize, QSizeF, Qt, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QFontMetricsF, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QTransform
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QFontMetricsF, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QPixmap, QTransform
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QLabel,
     QListWidget,
@@ -1380,13 +1381,33 @@ class LabelWindow(QMainWindow):
         self.load_directory_files()
 
     def show_about(self) -> None:
-        QMessageBox.about(
-            self,
-            "À propos",
-            "Tik - Impression d'étiquettes et d'enveloppes\n\n"
-            "Pour le Syndicat SUD\n\n"
-            "Par joe - 2026",
-        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle("À propos")
+
+        content = QVBoxLayout(dialog)
+        content.addWidget(QLabel("Tik - Impression d'étiquettes et d'enveloppes"))
+        content.addSpacing(12)
+        content.addWidget(QLabel("Pour le Syndicat SUD"))
+        content.addSpacing(12)
+        content.addWidget(QLabel("Par joe - 2026"))
+
+        footer = QHBoxLayout()
+        logo = QLabel()
+        logo_path = Path(__file__).resolve().parent / "sud-ptt.jpg"
+        logo_pixmap = QPixmap(str(logo_path))
+        if not logo_pixmap.isNull():
+            logo.setPixmap(logo_pixmap.scaled(
+                130, 72, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+        footer.addWidget(logo)
+        footer.addStretch()
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(dialog.accept)
+        footer.addWidget(buttons)
+        content.addLayout(footer)
+
+        dialog.exec()
 
     def export_formats(self) -> None:
         mode = "envelopes" if self.mode.currentIndex() == 1 else "labels"
