@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from format_settings import LabelFormat, PositionEditorDialog
 from label_app import (EnvelopeFormatDialog, EnvelopeLayout, LabelWindow,
                        PrintOptionsDialog, RenderStats, render_envelope_pdf,
-                       render_pdf)
+                       format_postal_code, render_pdf)
 from label_printer import load_csv
 
 
@@ -25,6 +25,11 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(label_format.sender_enabled)
         self.assertEqual(label_format.sender_font_size, 9)
         self.assertEqual(label_format.recipient_font_size, 15)
+
+    def test_postal_code_is_padded_to_five_digits(self):
+        self.assertEqual(format_postal_code("3250"), "03250")
+        self.assertEqual(format_postal_code("03250"), "03250")
+        self.assertEqual(format_postal_code("48000"), "48000")
 
     def test_position_reset_restores_typography(self):
         label_format = LabelFormat(
@@ -46,6 +51,7 @@ class FormatTests(unittest.TestCase):
             page_width=229, page_height=162, sender_enabled=False,
             sender_x=18, recipient_x=126, recipient_italic=True,
             postal_code_enabled=True, postal_code_x=24, postal_code_width=75,
+            background_image="/tmp/envelope-scan.png",
         )
         restored = EnvelopeLayout(**json.loads(json.dumps(asdict(layout))))
 
@@ -57,6 +63,7 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(restored.postal_code_enabled)
         self.assertEqual(restored.postal_code_x, 24)
         self.assertEqual(restored.postal_code_width, 75)
+        self.assertEqual(restored.background_image, "/tmp/envelope-scan.png")
 
     def test_render_without_sender(self):
         csv_path = next(Path("csv").glob("*.csv"))

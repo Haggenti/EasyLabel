@@ -82,6 +82,8 @@ class LabelFormat:
     sender_enabled: bool = True
     sender_alignment: str = "center"
     recipient_alignment: str = "center"
+    sender_vertical_alignment: str = "top"
+    recipient_vertical_alignment: str = "center"
 
 
 def alignment_flag(value: str, vertical: Qt.AlignmentFlag) -> Qt.AlignmentFlag:
@@ -90,6 +92,13 @@ def alignment_flag(value: str, vertical: Qt.AlignmentFlag) -> Qt.AlignmentFlag:
         "right": Qt.AlignmentFlag.AlignRight,
     }.get(value, Qt.AlignmentFlag.AlignHCenter)
     return horizontal | vertical
+
+
+def vertical_alignment_flag(value: str) -> Qt.AlignmentFlag:
+    return {
+        "top": Qt.AlignmentFlag.AlignTop,
+        "bottom": Qt.AlignmentFlag.AlignBottom,
+    }.get(value, Qt.AlignmentFlag.AlignVCenter)
 
 
 class FormatPreview(QWidget):
@@ -213,7 +222,9 @@ class PositionCanvas(QWidget):
                 rect.adjusted(3, 3, -3, -3),
                 alignment_flag(
                     getattr(self.format, f"{element}_alignment"),
-                    Qt.AlignmentFlag.AlignVCenter,
+                    vertical_alignment_flag(
+                        getattr(self.format, f"{element}_vertical_alignment")
+                    ),
                 ) | Qt.TextFlag.TextWordWrap,
                 sample,
             )
@@ -311,6 +322,7 @@ class PositionEditorDialog(QDialog):
         self.sender_italic = QCheckBox("Italique")
         self.sender_italic.setChecked(label_format.sender_italic)
         self.sender_alignment = self._alignment(label_format.sender_alignment)
+        self.sender_vertical_alignment = self._vertical_alignment(label_format.sender_vertical_alignment)
         self.recipient_font = QFontComboBox()
         self.recipient_font.setCurrentFont(QFont(label_format.recipient_font_family))
         self.recipient_size = self._number(label_format.recipient_font_size, 4, 40)
@@ -319,10 +331,13 @@ class PositionEditorDialog(QDialog):
         self.recipient_italic = QCheckBox("Italique")
         self.recipient_italic.setChecked(label_format.recipient_italic)
         self.recipient_alignment = self._alignment(label_format.recipient_alignment)
+        self.recipient_vertical_alignment = self._vertical_alignment(label_format.recipient_vertical_alignment)
         for control in (self.sender_enabled, self.sender_height, self.sender_font, self.sender_size,
                 self.sender_bold, self.sender_italic, self.sender_alignment,
+                self.sender_vertical_alignment,
                 self.recipient_font, self.recipient_size, self.recipient_bold,
-                self.recipient_italic, self.recipient_alignment):
+                self.recipient_italic, self.recipient_alignment,
+                self.recipient_vertical_alignment):
             if hasattr(control, "valueChanged"):
                 control.valueChanged.connect(self.update_sender_settings)
             if hasattr(control, "currentFontChanged"):
@@ -354,6 +369,7 @@ class PositionEditorDialog(QDialog):
         sender_style.addWidget(self.sender_bold)
         sender_style.addWidget(self.sender_italic)
         sender_style.addWidget(self.sender_alignment)
+        sender_style.addWidget(self.sender_vertical_alignment)
         settings.addRow("Style expéditeur", sender_style)
         settings.addRow("Police destinataire", self.recipient_font)
         recipient_style = QHBoxLayout()
@@ -361,6 +377,7 @@ class PositionEditorDialog(QDialog):
         recipient_style.addWidget(self.recipient_bold)
         recipient_style.addWidget(self.recipient_italic)
         recipient_style.addWidget(self.recipient_alignment)
+        recipient_style.addWidget(self.recipient_vertical_alignment)
         settings.addRow("Style destinataire", recipient_style)
         layout.addLayout(settings)
         layout.addWidget(self.canvas)
@@ -384,6 +401,15 @@ class PositionEditorDialog(QDialog):
         control.setCurrentIndex(index if index >= 0 else 1)
         return control
 
+    @staticmethod
+    def _vertical_alignment(value: str) -> QComboBox:
+        control = QComboBox()
+        for label, data in (("Haut", "top"), ("Centré", "center"), ("Bas", "bottom")):
+            control.addItem(label, data)
+        index = control.findData(value)
+        control.setCurrentIndex(index if index >= 0 else 1)
+        return control
+
     def update_sender_settings(self) -> None:
         self.canvas.format.sender_enabled = self.sender_enabled.isChecked()
         self.canvas.format.sender_height_percent = self.sender_height.value()
@@ -392,11 +418,13 @@ class PositionEditorDialog(QDialog):
         self.canvas.format.sender_bold = self.sender_bold.isChecked()
         self.canvas.format.sender_italic = self.sender_italic.isChecked()
         self.canvas.format.sender_alignment = self.sender_alignment.currentData()
+        self.canvas.format.sender_vertical_alignment = self.sender_vertical_alignment.currentData()
         self.canvas.format.recipient_font_family = self.recipient_font.currentFont().family()
         self.canvas.format.recipient_font_size = self.recipient_size.value()
         self.canvas.format.recipient_bold = self.recipient_bold.isChecked()
         self.canvas.format.recipient_italic = self.recipient_italic.isChecked()
         self.canvas.format.recipient_alignment = self.recipient_alignment.currentData()
+        self.canvas.format.recipient_vertical_alignment = self.recipient_vertical_alignment.currentData()
         self.canvas.clamp_offsets()
         self.canvas.update()
 
@@ -411,22 +439,30 @@ class PositionEditorDialog(QDialog):
         self.canvas.format.sender_bold = defaults.sender_bold
         self.canvas.format.sender_italic = defaults.sender_italic
         self.canvas.format.sender_alignment = defaults.sender_alignment
+        self.canvas.format.sender_vertical_alignment = defaults.sender_vertical_alignment
         self.canvas.format.recipient_font_family = defaults.recipient_font_family
         self.canvas.format.recipient_font_size = defaults.recipient_font_size
         self.canvas.format.recipient_bold = defaults.recipient_bold
         self.canvas.format.recipient_italic = defaults.recipient_italic
         self.canvas.format.recipient_alignment = defaults.recipient_alignment
+        self.canvas.format.recipient_vertical_alignment = defaults.recipient_vertical_alignment
         self.sender_enabled.setChecked(defaults.sender_enabled)
         self.sender_font.setCurrentFont(QFont(defaults.sender_font_family))
         self.sender_size.setValue(defaults.sender_font_size)
         self.sender_bold.setChecked(defaults.sender_bold)
         self.sender_italic.setChecked(defaults.sender_italic)
         self.sender_alignment.setCurrentIndex(self.sender_alignment.findData(defaults.sender_alignment))
+        self.sender_vertical_alignment.setCurrentIndex(
+            self.sender_vertical_alignment.findData(defaults.sender_vertical_alignment)
+        )
         self.recipient_font.setCurrentFont(QFont(defaults.recipient_font_family))
         self.recipient_size.setValue(defaults.recipient_font_size)
         self.recipient_bold.setChecked(defaults.recipient_bold)
         self.recipient_italic.setChecked(defaults.recipient_italic)
         self.recipient_alignment.setCurrentIndex(self.recipient_alignment.findData(defaults.recipient_alignment))
+        self.recipient_vertical_alignment.setCurrentIndex(
+            self.recipient_vertical_alignment.findData(defaults.recipient_vertical_alignment)
+        )
         self.canvas.update()
 
 
@@ -569,7 +605,8 @@ class FormatSettingsDialog(QDialog):
         self.recipient_height = values.get("recipient_height", defaults["recipient_height"])
         for field in ("sender_font_family", "sender_font_size", "sender_bold", "sender_italic",
                       "recipient_font_family", "recipient_font_size", "recipient_bold",
-                      "recipient_italic", "sender_alignment", "recipient_alignment"):
+                      "recipient_italic", "sender_alignment", "recipient_alignment",
+                      "sender_vertical_alignment", "recipient_vertical_alignment"):
             setattr(self, field, values.get(field, defaults[field]))
 
     def current_values(self) -> LabelFormat:
@@ -587,6 +624,7 @@ class FormatSettingsDialog(QDialog):
             self.recipient_bold, self.recipient_italic,
             self.sender_enabled,
             self.sender_alignment, self.recipient_alignment,
+            self.sender_vertical_alignment, self.recipient_vertical_alignment,
         )
 
     def update_preview(self) -> None:
@@ -608,6 +646,8 @@ class FormatSettingsDialog(QDialog):
         self.recipient_height = edited.recipient_height
         self.sender_height_percent = edited.sender_height_percent
         self.sender_enabled = edited.sender_enabled
+        self.sender_vertical_alignment = edited.sender_vertical_alignment
+        self.recipient_vertical_alignment = edited.recipient_vertical_alignment
         self.sender_font_family = edited.sender_font_family
         self.sender_font_size = edited.sender_font_size
         self.sender_bold = edited.sender_bold
