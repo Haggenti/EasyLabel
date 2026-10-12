@@ -12,7 +12,7 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QMarginsF, QPoint, QSettings, QRectF, QSize, QSizeF, Qt, QUrl, Signal
+from PySide6.QtCore import QMarginsF, QPoint, QPointF, QSettings, QRectF, QSize, QSizeF, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QFontMetricsF, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QTransform
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -103,6 +103,8 @@ class EnvelopeLayout:
     postal_code_y: float = 78
     postal_code_width: float = 60
     postal_code_height: float = 16
+    postal_code_offset_x: float = 0
+    postal_code_offset_y: float = 0
     background_image: str = ""
     sender_vertical_alignment: str = "top"
     recipient_vertical_alignment: str = "center"
@@ -159,6 +161,30 @@ def text_overflows(bounds: QRectF, rect: QRectF, font: QFont) -> bool:
             or bounds.height() > rect.height() + vertical_tolerance)
 
 
+POSTAL_CELL_GAP_MM = 2.0
+
+
+def draw_centered_digit(painter: QPainter, cell: QRectF, digit: str) -> None:
+    metrics = QFontMetricsF(painter.font())
+    bounds = metrics.tightBoundingRect(digit)
+    center = cell.center()
+    baseline = QPointF(
+        center.x() - bounds.center().x(),
+        center.y() - bounds.center().y(),
+    )
+    painter.drawText(baseline, digit)
+
+
+def postal_code_cells(rect: QRectF, count: int, gap: float = 2.0) -> list[QRectF]:
+    if count <= 0:
+        return []
+    gap = min(gap, rect.width() / max(count * 2, 1))
+    cell_width = (rect.width() - count * gap) / count
+    first_left = rect.left() + gap / 2
+    return [QRectF(first_left + index * (cell_width + gap), rect.top(),
+                   cell_width, rect.height()) for index in range(count)]
+
+
 class EnvelopeCanvas(QWidget):
     backgroundChanged = Signal(str)
     zoomChanged = Signal(float)
@@ -181,10 +207,28 @@ class EnvelopeCanvas(QWidget):
         self.original_size = (0.0, 0.0)
         self.zoom = 1.0
         self.setMinimumSize(700, 400)
+        self.resize(self.canvas_size())
+
+    def screen_scale(self) -> float:
+        return self.screen_dpi() / 25.4
+
+    def screen_dpi(self) -> float:
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return 96
+        dpi = screen.physicalDotsPerInchX() / screen.devicePixelRatio()
+        return dpi if 72 <= dpi <= 300 else 96
+
+    def canvas_size(self) -> QSize:
+        scale = self.screen_scale() * self.zoom
+        return QSize(
+            max(self.BASE_WIDTH, round(self.layout_data.page_width * scale + self.BASE_MARGIN * 2)),
+            max(self.BASE_HEIGHT, round(self.layout_data.page_height * scale + self.BASE_MARGIN * 2)),
+        )
 
     def set_zoom(self, value: float, anchor: QPoint | None = None) -> None:
         old_zoom = self.zoom
-        new_zoom = max(0.5, min(3.0, value))
+        new_zoom = max(0.5, min(5.0, value))
         if new_zoom == old_zoom:
             return
         scroll_area = self._scroll_area()
@@ -200,7 +244,7 @@ class EnvelopeCanvas(QWidget):
                     anchor.y() - scroll_area.verticalScrollBar().value(),
                 )
         self.zoom = new_zoom
-        self.resize(round(self.BASE_WIDTH * self.zoom), round(self.BASE_HEIGHT * self.zoom))
+        self.resize(self.canvas_size())
         if page_anchor is not None and viewport_anchor is not None and scroll_area is not None:
             new_scale, new_page = self.scale_and_page()
             target = QPoint(
@@ -226,9 +270,7 @@ class EnvelopeCanvas(QWidget):
         return None
 
     def scale_and_page(self) -> tuple[float, QRectF]:
-        base_scale = min((self.BASE_WIDTH - self.BASE_MARGIN * 2) / self.layout_data.page_width,
-                         (self.BASE_HEIGHT - self.BASE_MARGIN * 2) / self.layout_data.page_height)
-        scale = base_scale * self.zoom
+        scale = self.screen_scale() * self.zoom
         page_width = self.layout_data.page_width * scale
         page_height = self.layout_data.page_height * scale
         page = QRectF((self.width() - page_width) / 2,
@@ -247,21 +289,16 @@ class EnvelopeCanvas(QWidget):
 
     def handle_rect(self, element: str) -> QRectF:
         rect = self.rect_for(element)
-        return QRectF(rect.right() - 8, rect.bottom() - 8, 16, 16)
+        return QRectF(rect.right() - 8, rect.top() - 8, 16, 16)
 
-    def draw_postal_code(self, painter: QPainter, rect: QRectF) -> None:
+    def draw_postal_code(self, painter: QPainter, rect: QRectF, scale: float) -> None:
         postal_code = format_postal_code(self.postal_code_text)
         postal_code = "".join(character for character in postal_code if character.isdigit())
         if not postal_code:
             return
-        cell_width = rect.width() / len(postal_code)
-        for index, character in enumerate(postal_code):
-            cell = QRectF(rect.left() + index * cell_width, rect.top(), cell_width, rect.height())
-            painter.drawText(
-                cell.adjusted(2, 2, -2, -2),
-                Qt.AlignmentFlag.AlignCenter,
-                character,
-            )
+        cells = postal_code_cells(rect, len(postal_code), POSTAL_CELL_GAP_MM * scale)
+        for cell, character in zip(cells, postal_code):
+            draw_centered_digit(painter, cell, character)
 
     def set_background_image(self, path: str) -> None:
         self.layout_data.background_image = path
@@ -270,18 +307,11 @@ class EnvelopeCanvas(QWidget):
 
     def load_background_image(self) -> QImage:
         path = self.layout_data.background_image
-        if Path(path).suffix.lower() == ".pdf":
-            document = QPdfDocument()
-            if document.load(path) != QPdfDocument.Error.None_ or document.pageCount() == 0:
-                return QImage()
-            page_size = document.pagePointSize(0)
-            render_width = 2400
-            render_height = max(1, round(render_width * page_size.height() / page_size.width()))
-            image = document.render(0, QSize(render_width, render_height))
-        else:
-            reader = QImageReader(path)
-            reader.setAutoTransform(True)
-            image = reader.read()
+        if Path(path).suffix.lower() not in {".jpg", ".jpeg"}:
+            return QImage()
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        image = reader.read()
         if image.isNull():
             return image
         page_is_landscape = self.layout_data.page_width >= self.layout_data.page_height
@@ -386,7 +416,7 @@ class EnvelopeCanvas(QWidget):
             painter.setBrush(Qt.GlobalColor.darkRed)
             painter.drawRect(self.handle_rect("postal_code"))
             painter.setPen(Qt.GlobalColor.darkRed)
-            self.draw_postal_code(painter, rect)
+            self.draw_postal_code(painter, rect, scale)
         del scale
 
     def mousePressEvent(self, event) -> None:
@@ -426,10 +456,15 @@ class EnvelopeCanvas(QWidget):
         scale, _ = self.scale_and_page()
         delta = event.position() - self.drag_start
         if self.drag_mode == "resize":
-            width = max(20, min(self.layout_data.page_width - self.original_offset[0],
+            minimum_width = 5 if self.active == "postal_code" else 20
+            minimum_height = 5 if self.active == "postal_code" else 10
+            width = max(minimum_width, min(self.layout_data.page_width - self.original_offset[0],
                                 self.original_size[0] + delta.x() / scale))
-            height = max(10, min(self.layout_data.page_height - self.original_offset[1],
-                                 self.original_size[1] + delta.y() / scale))
+            bottom = self.original_offset[1] + self.original_size[1]
+            top = max(0, min(bottom - minimum_height,
+                             self.original_offset[1] + delta.y() / scale))
+            height = bottom - top
+            setattr(self.layout_data, f"{self.active}_y", round(top * 2) / 2)
             setattr(self.layout_data, f"{self.active}_width", round(width * 2) / 2)
             setattr(self.layout_data, f"{self.active}_height", round(height * 2) / 2)
         else:
@@ -467,20 +502,20 @@ def fit_font(text: str, rect: QRectF, base_size: int = 15, minimum_size: int = 9
 
 
 def draw_postal_code(painter: QPainter, rect: QRectF, postal_code: str,
-                     font: QFont, draw_guides: bool = False) -> None:
+                     font: QFont, draw_guides: bool = False,
+                     offset_x: float = 0, offset_y: float = 0) -> None:
     digits = "".join(character for character in postal_code if character.isdigit())
     if not digits:
         return
-    cell_width = rect.width() / len(digits)
+    cells = postal_code_cells(rect, len(digits), mm(POSTAL_CELL_GAP_MM))
     painter.setFont(font)
-    for index, digit in enumerate(digits):
-        cell = QRectF(rect.left() + index * cell_width, rect.top(), cell_width, rect.height())
+    for cell, digit in zip(cells, digits):
         if draw_guides:
             painter.save()
             painter.setPen(QPen(Qt.GlobalColor.gray, 0.5, Qt.PenStyle.DashLine))
             painter.drawRect(cell)
             painter.restore()
-        painter.drawText(cell, Qt.AlignmentFlag.AlignCenter, digit)
+        draw_centered_digit(painter, cell, digit)
 
 
 def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, rows: int,
@@ -652,7 +687,9 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                         recipient_vertical_alignment: str = "center",
                         postal_code_enabled: bool = False, postal_code_x: float = 20,
                         postal_code_y: float = 78, postal_code_width: float = 60,
-                        postal_code_height: float = 16) -> RenderStats:
+                        postal_code_height: float = 16,
+                        postal_code_offset_x: float = 0,
+                        postal_code_offset_y: float = 0) -> RenderStats:
     width_mm, height_mm = envelope_size
     writer = QPdfWriter(str(output_path))
     writer.setPageSize(QPageSize(QSizeF(width_mm, height_mm), QPageSize.Unit.Millimeter))
@@ -714,7 +751,10 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                                      mm(postal_code_width), mm(postal_code_height))
                 postal_font = QFont(recipient_font)
                 postal_code = format_postal_code(recipient.postal_code)
-                draw_postal_code(painter, postal_rect, postal_code, postal_font, show_guides)
+                draw_postal_code(
+                    painter, postal_rect, postal_code, postal_font, show_guides,
+                    postal_code_offset_x, postal_code_offset_y,
+                )
             stats.labels += 1
 
     painter.end()
@@ -730,6 +770,8 @@ class EnvelopeEditorDialog(QDialog):
         self.resize(820, 620)
         self.setModal(True)
         self.layout_data = layout_data
+        if Path(layout_data.background_image).suffix.lower() not in {".jpg", ".jpeg"}:
+            self.layout_data.background_image = ""
         self.page_width = self.number(layout_data.page_width, 80, 500)
         self.page_height = self.number(layout_data.page_height, 50, 300)
         self.page_width.valueChanged.connect(self.update_page)
@@ -908,9 +950,9 @@ class EnvelopeEditorDialog(QDialog):
             self,
             "Charger un fond d’enveloppe",
             "",
-            "Images et PDF (*.png *.jpg *.jpeg *.pdf);;PNG (*.png);;JPEG (*.jpg *.jpeg);;PDF (*.pdf)",
+            "Images JPEG (*.jpg *.jpeg)",
         )
-        if path:
+        if path and Path(path).suffix.lower() in {".jpg", ".jpeg"}:
             self.canvas.set_background_image(path)
 
     def update_background_button(self, path: str) -> None:
@@ -1235,6 +1277,8 @@ class LabelWindow(QMainWindow):
         self.envelope_postal_code_y = 78.0
         self.envelope_postal_code_width = 60.0
         self.envelope_postal_code_height = 16.0
+        self.envelope_postal_code_offset_x = 0.0
+        self.envelope_postal_code_offset_y = 0.0
         self.printers = QComboBox()
         self.load_printers()
 
@@ -1269,19 +1313,8 @@ class LabelWindow(QMainWindow):
         mode_menu.addAction(self.label_mode_action)
         mode_menu.addAction(self.envelope_mode_action)
 
-        layout_menu = self.menuBar().addMenu("Mise en page")
-        self.format_action = layout_menu.addAction("Formats...")
-        self.format_action.triggered.connect(self.open_format_settings)
-        self.envelope_layout_separator = layout_menu.addSeparator()
-        self.envelope_format_menu = layout_menu.addMenu("Format enveloppe")
-        self.envelope_format_actions = []
-        for index in range(self.envelope_format.count()):
-            action = self.envelope_format_menu.addAction(self.envelope_format.itemText(index))
-            action.setCheckable(True)
-            action.triggered.connect(lambda checked=False, selected=index: self.envelope_format.setCurrentIndex(selected))
-            self.envelope_format_actions.append(action)
-        self.envelope_formats_action = layout_menu.addAction("Gérer les formats...")
-        self.envelope_formats_action.triggered.connect(self.open_envelope_formats)
+        self.format_manager_action = self.menuBar().addAction("Gérer les formats")
+        self.format_manager_action.triggered.connect(self.open_format_manager)
 
         printer_menu = self.menuBar().addMenu("Imprimante")
         self.printer_actions = []
@@ -1548,12 +1581,6 @@ class LabelWindow(QMainWindow):
         is_envelope = self.mode.currentIndex() == 1
         self.label_mode_action.setChecked(not is_envelope)
         self.envelope_mode_action.setChecked(is_envelope)
-        self.format_action.setVisible(not is_envelope)
-        self.envelope_layout_separator.setVisible(is_envelope)
-        self.envelope_format_menu.menuAction().setVisible(is_envelope)
-        self.envelope_formats_action.setVisible(is_envelope)
-        for index, action in enumerate(self.envelope_format_actions):
-            action.setChecked(index == self.envelope_format.currentIndex())
         self.update_active_format_display()
         self.start_column.setEnabled(not is_envelope)
         self.start_row.setEnabled(not is_envelope)
@@ -1564,6 +1591,12 @@ class LabelWindow(QMainWindow):
         else:
             text = f"Format actif : {self.format_name}"
         self.preset_info.setText(text)
+
+    def open_format_manager(self) -> None:
+        if self.mode.currentIndex() == 1:
+            self.open_envelope_formats()
+        else:
+            self.open_format_settings()
 
     def update_start_ranges(self) -> None:
         self.start_column.setMaximum(self.columns.value())
@@ -1603,8 +1636,6 @@ class LabelWindow(QMainWindow):
         name = self.envelope_format.currentText()
         if name in self.envelope_presets and name != self.envelope_preset_name:
             self.apply_envelope_preset(name)
-        for index, action in enumerate(self.envelope_format_actions):
-            action.setChecked(index == self.envelope_format.currentIndex())
         self.update_active_format_display()
 
     def apply_envelope_preset(self, name: str) -> None:
@@ -1639,6 +1670,8 @@ class LabelWindow(QMainWindow):
         self.envelope_postal_code_y = layout_data.postal_code_y
         self.envelope_postal_code_width = layout_data.postal_code_width
         self.envelope_postal_code_height = layout_data.postal_code_height
+        self.envelope_postal_code_offset_x = layout_data.postal_code_offset_x
+        self.envelope_postal_code_offset_y = layout_data.postal_code_offset_y
         self.envelope_x.setMaximum(max(220, round(layout_data.page_width)))
         self.envelope_y.setMaximum(max(162, round(layout_data.page_height)))
         self.envelope_width.setMaximum(max(220, round(layout_data.page_width)))
@@ -1660,15 +1693,6 @@ class LabelWindow(QMainWindow):
         for name, values in self.envelope_presets.items():
             self.envelope_format.addItem(name, (values["page_width"], values["page_height"]))
         self.envelope_format.blockSignals(False)
-        self.envelope_format_menu.clear()
-        self.envelope_format_actions = []
-        for index in range(self.envelope_format.count()):
-            action = self.envelope_format_menu.addAction(self.envelope_format.itemText(index))
-            action.setCheckable(True)
-            action.triggered.connect(
-                lambda checked=False, selected=index: self.envelope_format.setCurrentIndex(selected)
-            )
-            self.envelope_format_actions.append(action)
         self.apply_envelope_preset(active_name)
 
     def open_envelope_formats(self) -> None:
@@ -1755,6 +1779,7 @@ class LabelWindow(QMainWindow):
             self.envelope_postal_code_enabled, self.envelope_postal_code_x,
             self.envelope_postal_code_y, self.envelope_postal_code_width,
             self.envelope_postal_code_height,
+            self.envelope_postal_code_offset_x, self.envelope_postal_code_offset_y,
             "", self.envelope_sender_vertical_alignment,
             self.envelope_recipient_vertical_alignment,
         )
@@ -1795,6 +1820,8 @@ class LabelWindow(QMainWindow):
         self.envelope_postal_code_y = edited.postal_code_y
         self.envelope_postal_code_width = edited.postal_code_width
         self.envelope_postal_code_height = edited.postal_code_height
+        self.envelope_postal_code_offset_x = edited.postal_code_offset_x
+        self.envelope_postal_code_offset_y = edited.postal_code_offset_y
         self.save_envelope_layout(edited)
         self.envelope_x.setValue(round(edited.recipient_x))
         self.envelope_y.setValue(round(edited.recipient_y))
@@ -2011,6 +2038,8 @@ class LabelWindow(QMainWindow):
                 self.envelope_postal_code_enabled, self.envelope_postal_code_x,
                 self.envelope_postal_code_y, self.envelope_postal_code_width,
                 self.envelope_postal_code_height,
+                self.envelope_postal_code_offset_x,
+                self.envelope_postal_code_offset_y,
             )
         else:
             stats = render_pdf(documents, output, self.columns.value(), self.rows.value(),
@@ -2159,14 +2188,21 @@ class PdfPreviewDialog(QDialog):
         self.view = view
         view.setDocument(self.document)
         view.setPageMode(QPdfView.PageMode.MultiPage)
-        view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        view.setZoomMode(QPdfView.ZoomMode.Custom)
+        view.setZoomFactor(1.0)
 
-        zoom_out_button = QPushButton("−")
-        zoom_out_button.setToolTip("Réduire le zoom")
-        zoom_out_button.clicked.connect(self.zoom_out)
-        zoom_in_button = QPushButton("+")
-        zoom_in_button.setToolTip("Augmenter le zoom")
-        zoom_in_button.clicked.connect(self.zoom_in)
+        dpi_label = QLabel("DPI : 72 (PDF)")
+        zoom_buttons = []
+        for level in (1.0, 1.5, 2.0):
+            button = QPushButton(f"x{level:g}".replace(".", ","))
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked, value=level: self.set_preview_zoom(value))
+            zoom_buttons.append(button)
+        self.zoom_buttons = zoom_buttons
+        zoom_value = QLabel("x1")
+        self.preview_zoom_value = zoom_value
+        for button in zoom_buttons:
+            button.setChecked(button is zoom_buttons[0])
         fit_button = QPushButton("Largeur")
         fit_button.setToolTip("Adapter à la largeur de la fenêtre")
         fit_button.clicked.connect(self.fit_width)
@@ -2174,8 +2210,11 @@ class PdfPreviewDialog(QDialog):
         self.guides_checkbox.setChecked(True)
         self.guides_checkbox.stateChanged.connect(self.toggle_guides)
         toolbar = QHBoxLayout()
-        toolbar.addWidget(zoom_out_button)
-        toolbar.addWidget(zoom_in_button)
+        toolbar.addWidget(dpi_label)
+        toolbar.addWidget(QLabel("Zoom"))
+        for button in zoom_buttons:
+            toolbar.addWidget(button)
+        toolbar.addWidget(zoom_value)
         toolbar.addWidget(fit_button)
         toolbar.addWidget(self.guides_checkbox)
         toolbar.addStretch()
@@ -2228,6 +2267,13 @@ class PdfPreviewDialog(QDialog):
     def zoom_in(self) -> None:
         self.view.setZoomMode(QPdfView.ZoomMode.Custom)
         self.view.setZoomFactor(min(self.view.zoomFactor() * 1.2, 5.0))
+
+    def set_preview_zoom(self, value: float) -> None:
+        self.view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self.view.setZoomFactor(value)
+        self.preview_zoom_value.setText(f"x{value:g}".replace(".", ","))
+        for level, button in zip((1.0, 1.5, 2.0), self.zoom_buttons):
+            button.setChecked(abs(level - value) < 0.01)
 
     def zoom_out(self) -> None:
         self.view.setZoomMode(QPdfView.ZoomMode.Custom)

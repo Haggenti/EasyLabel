@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -198,6 +199,8 @@ class FormatPreview(QWidget):
 
 
 class PositionCanvas(QWidget):
+    ZOOM_LEVELS = (1.0, 1.5, 2.0)
+
     def __init__(self, label_format: LabelFormat, sender_text: str = "Expéditeur",
                  recipient_text: str = "Destinataire", parent: QWidget | None = None):
         super().__init__(parent)
@@ -209,15 +212,40 @@ class PositionCanvas(QWidget):
         self.drag_start = None
         self.original_offset = (0.0, 0.0)
         self.original_size = (0.0, 0.0)
+        self.zoom = 1.0
         self.setMinimumSize(560, 360)
+        self.resize(self.canvas_size())
+
+    def screen_dpi(self) -> float:
+        screen = self.screen()
+        if screen is None:
+            screen = self.window().windowHandle().screen() if self.window().windowHandle() else None
+        if screen is None:
+            return 96
+        dpi = screen.physicalDotsPerInchX() / screen.devicePixelRatio()
+        return dpi if 72 <= dpi <= 300 else 96
+
+    def scale_and_page(self) -> tuple[float, QRectF]:
+        scale = self.screen_dpi() / 25.4 * self.zoom
+        page = QRectF(40, 40, 100 * scale, 60 * scale)
+        return scale, page
+
+    def canvas_size(self) -> QSize:
+        _, page = self.scale_and_page()
+        return QSize(max(560, round(page.right() + 40)),
+                     max(360, round(page.bottom() + 40)))
+
+    def set_zoom(self, value: float) -> None:
+        self.zoom = min(self.ZOOM_LEVELS, key=lambda level: abs(level - value))
+        self.resize(self.canvas_size())
+        self.update()
 
     def set_format(self, label_format: LabelFormat) -> None:
         self.format = label_format
         self.update()
 
     def geometry_for(self, element: str) -> QRectF:
-        scale = min((self.width() - 80) / 100, (self.height() - 80) / 60)
-        origin = QRectF(40, 40, 100 * scale, 60 * scale)
+        scale, origin = self.scale_and_page()
         if element == "sender":
             sender_height = max(10, min(28, self.format.sender_height_percent * 0.5))
             return QRectF(origin.left() + (2 + self.format.sender_offset_x) * scale,
@@ -241,8 +269,7 @@ class PositionCanvas(QWidget):
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
-        scale = min((self.width() - 80) / 100, (self.height() - 80) / 60)
-        page = QRectF(40, 40, 100 * scale, 60 * scale)
+        scale, page = self.scale_and_page()
         painter.fillRect(page, Qt.GlobalColor.white)
         painter.setPen(QPen(Qt.GlobalColor.darkGray, 1))
         painter.drawRect(page)
@@ -315,7 +342,7 @@ class PositionCanvas(QWidget):
     def mouseMoveEvent(self, event) -> None:
         if not self.active or self.drag_start is None:
             return
-        scale = min((self.width() - 80) / 100, (self.height() - 80) / 60)
+        scale, _ = self.scale_and_page()
         delta = event.position() - self.drag_start
         base_x, base_y, element_width, element_height = self.base_geometry(self.active)
         if self.drag_mode == "resize":
@@ -406,6 +433,24 @@ class PositionEditorDialog(QDialog):
             if hasattr(control, "stateChanged"):
                 control.stateChanged.connect(self.update_sender_settings)
         instructions = QLabel("Faites glisser les blocs Expéditeur et Destinataire dans l'étiquette.")
+        dpi_label = QLabel(f"DPI : {self.canvas.screen_dpi():.0f}")
+        zoom_buttons = []
+        zoom_value = QLabel("x1")
+        for level in PositionCanvas.ZOOM_LEVELS:
+            button = QPushButton(f"x{level:g}".replace(".", ","))
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked, value=level: self.set_canvas_zoom(value))
+            zoom_buttons.append(button)
+        self.zoom_buttons = zoom_buttons
+        self.zoom_value = zoom_value
+        zoom_buttons[0].setChecked(True)
+        zoom_controls = QHBoxLayout()
+        zoom_controls.addWidget(dpi_label)
+        zoom_controls.addWidget(QLabel("Zoom"))
+        for button in zoom_buttons:
+            zoom_controls.addWidget(button)
+        zoom_controls.addWidget(zoom_value)
+        zoom_controls.addStretch()
         reset_button = QPushButton("Réinitialiser")
         reset_button.clicked.connect(self.reset_positions)
         apply_button = QPushButton("Valider")
@@ -439,8 +484,18 @@ class PositionEditorDialog(QDialog):
         recipient_style.addWidget(self.recipient_vertical_alignment)
         settings.addRow("Style destinataire", recipient_style)
         layout.addLayout(settings)
-        layout.addWidget(self.canvas)
+        layout.addLayout(zoom_controls)
+        canvas_scroll = QScrollArea()
+        canvas_scroll.setWidgetResizable(False)
+        canvas_scroll.setWidget(self.canvas)
+        layout.addWidget(canvas_scroll, 1)
         layout.addLayout(buttons)
+
+    def set_canvas_zoom(self, value: float) -> None:
+        self.canvas.set_zoom(value)
+        self.zoom_value.setText(f"x{self.canvas.zoom:g}".replace(".", ","))
+        for level, button in zip(PositionCanvas.ZOOM_LEVELS, self.zoom_buttons):
+            button.setChecked(abs(level - self.canvas.zoom) < 0.01)
 
     @staticmethod
     def _number(value: float, minimum: float, maximum: float) -> QDoubleSpinBox:
