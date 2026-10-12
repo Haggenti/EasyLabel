@@ -13,7 +13,7 @@ import csv
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QMarginsF, QPoint, QPointF, QSettings, QRectF, QSize, QSizeF, Qt, QUrl, Signal
+from PySide6.QtCore import QMarginsF, QPoint, QPointF, QSettings, QRectF, QSize, QSizeF, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QFontMetricsF, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QPixmap, QTransform
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -208,6 +208,8 @@ class EnvelopeCanvas(QWidget):
         self.original_offset = (0.0, 0.0)
         self.original_size = (0.0, 0.0)
         self.zoom = 1.0
+        self.pan_start = None
+        self.pan_scroll_start = None
         self.setMinimumSize(700, 400)
         self.resize(self.canvas_size())
 
@@ -228,39 +230,19 @@ class EnvelopeCanvas(QWidget):
             max(self.BASE_HEIGHT, round(self.layout_data.page_height * scale + self.BASE_MARGIN * 2)),
         )
 
-    def set_zoom(self, value: float, anchor: QPoint | None = None) -> None:
+    def set_zoom(self, value: float) -> None:
         old_zoom = self.zoom
         new_zoom = max(0.5, min(5.0, value))
         if new_zoom == old_zoom:
             return
-        scroll_area = self._scroll_area()
-        viewport_anchor = None
-        page_anchor = None
-        if anchor is not None:
-            old_scale, old_page = self.scale_and_page()
-            page_anchor = ((anchor.x() - old_page.left()) / old_scale,
-                           (anchor.y() - old_page.top()) / old_scale)
-            if scroll_area is not None:
-                viewport_anchor = QPoint(
-                    anchor.x() - scroll_area.horizontalScrollBar().value(),
-                    anchor.y() - scroll_area.verticalScrollBar().value(),
-                )
         self.zoom = new_zoom
         self.resize(self.canvas_size())
-        if page_anchor is not None and viewport_anchor is not None and scroll_area is not None:
-            new_scale, new_page = self.scale_and_page()
-            target = QPoint(
-                round(new_page.left() + page_anchor[0] * new_scale),
-                round(new_page.top() + page_anchor[1] * new_scale),
-            )
-            scroll_area.horizontalScrollBar().setValue(target.x() - viewport_anchor.x())
-            scroll_area.verticalScrollBar().setValue(target.y() - viewport_anchor.y())
         self.zoomChanged.emit(self.zoom)
         self.update()
 
     def wheelEvent(self, event) -> None:
         direction = 1 if event.angleDelta().y() > 0 else -1
-        self.set_zoom(self.zoom + direction * 0.25, event.position().toPoint())
+        self.set_zoom(self.zoom + direction * 0.25)
         event.accept()
 
     def _scroll_area(self) -> QScrollArea | None:
@@ -396,7 +378,10 @@ class EnvelopeCanvas(QWidget):
             painter.setBrush(color)
             painter.drawRect(self.handle_rect(element))
             font = QFont(getattr(self.layout_data, f"{element}_font_family"))
-            font.setPointSizeF(getattr(self.layout_data, f"{element}_font_size") * self.zoom)
+            font.setPixelSize(round(
+                getattr(self.layout_data, f"{element}_font_size")
+                * self.screen_dpi() / 72 * self.zoom
+            ))
             font.setBold(getattr(self.layout_data, f"{element}_bold"))
             font.setItalic(getattr(self.layout_data, f"{element}_italic"))
             painter.setFont(font)
@@ -451,8 +436,36 @@ class EnvelopeCanvas(QWidget):
                 self.original_size = (getattr(self.layout_data, f"{element}_width"),
                                       getattr(self.layout_data, f"{element}_height"))
                 return
+        scroll_area = self._scroll_area()
+        if scroll_area is not None and self.scale_and_page()[1].contains(event.position()):
+            self.pan_start = scroll_area.viewport().mapFromGlobal(
+                event.globalPosition().toPoint()
+            )
+            self.pan_scroll_start = (
+                scroll_area.horizontalScrollBar().value(),
+                scroll_area.verticalScrollBar().value(),
+            )
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        event.ignore()
 
     def mouseMoveEvent(self, event) -> None:
+        if self.pan_start is not None and self.pan_scroll_start is not None:
+            scroll_area = self._scroll_area()
+            if scroll_area is not None:
+                current_position = scroll_area.viewport().mapFromGlobal(
+                    event.globalPosition().toPoint()
+                )
+                delta = current_position - self.pan_start
+                scroll_area.horizontalScrollBar().setValue(
+                    self.pan_scroll_start[0] - delta.x()
+                )
+                scroll_area.verticalScrollBar().setValue(
+                    self.pan_scroll_start[1] - delta.y()
+                )
+            event.accept()
+            return
         if not self.active or self.drag_start is None:
             return
         scale, _ = self.scale_and_page()
@@ -479,6 +492,12 @@ class EnvelopeCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
+        if self.pan_start is not None:
+            self.pan_start = None
+            self.pan_scroll_start = None
+            self.unsetCursor()
+            event.accept()
+            return
         del event
         self.active = ""
         self.drag_mode = ""
@@ -769,7 +788,7 @@ class EnvelopeEditorDialog(QDialog):
                  postal_code_text: str = "00000"):
         super().__init__(parent)
         self.setWindowTitle("Ajuster l’enveloppe")
-        self.resize(820, 620)
+        self.resize(820, 440)
         self.setModal(True)
         self.layout_data = layout_data
         if Path(layout_data.background_image).suffix.lower() not in {".jpg", ".jpeg"}:
@@ -822,6 +841,26 @@ class EnvelopeEditorDialog(QDialog):
             layout_data, sender_text, recipient_text, postal_code_text, self
         )
         self.canvas.backgroundChanged.connect(self.update_background_button)
+        self.canvas_window = QDialog(
+            self,
+            Qt.WindowType.Tool | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowMinMaxButtonsHint | Qt.WindowType.WindowCloseButtonHint,
+        )
+        self.canvas_window.setWindowTitle("Aperçu de l’enveloppe")
+        self.canvas_window.resize(760, 560)
+        self.canvas_window.setModal(False)
+        self.canvas_window.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        canvas_window_layout = QVBoxLayout(self.canvas_window)
+        canvas_scroll = QScrollArea()
+        canvas_scroll.setWidgetResizable(False)
+        canvas_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        canvas_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        canvas_scroll.setWidget(self.canvas)
+        canvas_window_layout.addWidget(canvas_scroll)
+        self.canvas_window.finished.connect(self.canvas_window_closed)
+        open_canvas_button = QPushButton("Ouvrir l’aperçu dans une fenêtre")
+        open_canvas_button.clicked.connect(self.show_canvas_window)
+        self.open_canvas_button = open_canvas_button
         zoom_out_button = QPushButton("−")
         zoom_out_button.setToolTip("Réduire le zoom")
         zoom_out_button.clicked.connect(lambda: self.canvas.set_zoom(self.canvas.zoom - 0.25))
@@ -841,6 +880,7 @@ class EnvelopeEditorDialog(QDialog):
         zoom_controls.addWidget(zoom_in_button)
         zoom_controls.addWidget(zoom_value)
         zoom_controls.addStretch()
+        zoom_controls.addWidget(open_canvas_button)
 
         settings = QGridLayout()
         settings.addWidget(QLabel("Largeur enveloppe (mm)"), 0, 0)
@@ -884,14 +924,34 @@ class EnvelopeEditorDialog(QDialog):
         buttons.addWidget(cancel_button)
         buttons.addWidget(apply_button)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(5)
+        settings.setVerticalSpacing(4)
         layout.addLayout(settings)
         layout.addLayout(zoom_controls)
         layout.addWidget(instructions)
-        canvas_scroll = QScrollArea()
-        canvas_scroll.setWidgetResizable(False)
-        canvas_scroll.setWidget(self.canvas)
-        layout.addWidget(canvas_scroll, 1)
         layout.addLayout(buttons)
+        self.show_canvas_window()
+
+    def show_canvas_window(self) -> None:
+        self.canvas_window.show()
+        self.canvas_window.raise_()
+        self.canvas_window.activateWindow()
+        QTimer.singleShot(0, self.focus_canvas_window)
+        self.open_canvas_button.setEnabled(False)
+
+    def focus_canvas_window(self) -> None:
+        if self.canvas_window.isVisible():
+            self.canvas_window.raise_()
+            self.canvas_window.activateWindow()
+            self.canvas.setFocus()
+
+    def canvas_window_closed(self) -> None:
+        self.open_canvas_button.setEnabled(True)
+
+    def closeEvent(self, event) -> None:
+        self.canvas_window.close()
+        super().closeEvent(event)
 
     @staticmethod
     def number(value: float, minimum: float, maximum: float) -> QDoubleSpinBox:
@@ -1577,6 +1637,9 @@ class LabelWindow(QMainWindow):
             self.add_file(Path(path))
 
     def load_printers(self) -> None:
+        if os.name == "nt":
+            self.printers.addItem("Imprimante par défaut", "")
+            return
         try:
             result = subprocess.run(
                 ["lpstat", "-a"], capture_output=True, text=True, check=False, timeout=5
@@ -2214,20 +2277,7 @@ class LabelWindow(QMainWindow):
             test_page = bool(test_page_override)
             self._test_page_requested = test_page
             pdf_path, stats = self.create_pdf(show_guides=test_page)
-            printer_name = self.printers.currentData()
-            command = ["lp"]
-            if printer_name:
-                command.extend(["-d", printer_name])
-            if (self.mode.currentIndex() == 0
-                    and abs(self.page_width - 210) < 0.1
-                    and abs(self.page_height - 297) < 0.1):
-                command.extend(["-o", "media=A4"])
-            command.extend(["-o", "print-scaling=none"])
-            command.extend(["-n", str(options.copies.value())])
             page_range = "1" if test_page else options.page_range.text().strip()
-            if page_range:
-                command.extend(["-P", page_range])
-            command.append(str(pdf_path))
             page_summary = "page de test (page 1)" if test_page else (page_range or "toutes les pages")
             printer_summary = self.printers.currentText()
             mode_summary = "enveloppes" if self.mode.currentIndex() == 1 else "étiquettes"
@@ -2244,11 +2294,27 @@ class LabelWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes,
             ) != QMessageBox.StandardButton.Yes:
                 return
-            result = subprocess.run(
-                command, capture_output=True, text=True, check=False, timeout=30
-            )
-            if result.returncode:
-                raise RuntimeError(result.stderr.strip() or "CUPS a refusé le document")
+            if os.name == "nt":
+                os.startfile(str(pdf_path), "print")
+            else:
+                printer_name = self.printers.currentData()
+                command = ["lp"]
+                if printer_name:
+                    command.extend(["-d", printer_name])
+                if (self.mode.currentIndex() == 0
+                        and abs(self.page_width - 210) < 0.1
+                        and abs(self.page_height - 297) < 0.1):
+                    command.extend(["-o", "media=A4"])
+                command.extend(["-o", "print-scaling=none"])
+                command.extend(["-n", str(options.copies.value())])
+                if page_range:
+                    command.extend(["-P", page_range])
+                command.append(str(pdf_path))
+                result = subprocess.run(
+                    command, capture_output=True, text=True, check=False, timeout=30
+                )
+                if result.returncode:
+                    raise RuntimeError(result.stderr.strip() or "CUPS a refusé le document")
             verb = "de test envoyée(s)" if test_page else "envoyée(s)"
             QMessageBox.information(self, "Impression envoyée", self.render_summary(stats, verb))
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
@@ -2307,6 +2373,9 @@ class PdfPreviewDialog(QDialog):
         fit_button = QPushButton("Largeur")
         fit_button.setToolTip("Adapter à la largeur de la fenêtre")
         fit_button.clicked.connect(self.fit_width)
+        fit_page_button = QPushButton("Page")
+        fit_page_button.setToolTip("Afficher la page entière dans la fenêtre")
+        fit_page_button.clicked.connect(self.fit_page)
         self.guides_checkbox = QCheckBox("Contours des étiquettes")
         self.guides_checkbox.setChecked(True)
         self.guides_checkbox.stateChanged.connect(self.toggle_guides)
@@ -2317,6 +2386,7 @@ class PdfPreviewDialog(QDialog):
             toolbar.addWidget(button)
         toolbar.addWidget(zoom_value)
         toolbar.addWidget(fit_button)
+        toolbar.addWidget(fit_page_button)
         toolbar.addWidget(self.guides_checkbox)
         toolbar.addStretch()
 
@@ -2382,6 +2452,9 @@ class PdfPreviewDialog(QDialog):
 
     def fit_width(self) -> None:
         self.view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+
+    def fit_page(self) -> None:
+        self.view.setZoomMode(QPdfView.ZoomMode.FitInView)
 
     def closeEvent(self, event) -> None:
         self.pdf_path.unlink(missing_ok=True)

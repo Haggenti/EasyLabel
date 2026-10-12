@@ -84,7 +84,12 @@ def _normalise_format(name: object, values: object) -> tuple[str | None, dict | 
                 value = float(value)
                 if not math.isfinite(value):
                     return None, None
-            elif value is not None and not isinstance(value, str):
+            elif default is None:
+                if value is not None:
+                    value = float(value)
+                    if not math.isfinite(value):
+                        return None, None
+            elif not isinstance(value, str):
                 return None, None
         except (TypeError, ValueError, OverflowError):
             return None, None
@@ -332,21 +337,26 @@ class PositionCanvas(QWidget):
     def geometry_for(self, element: str) -> QRectF:
         _, origin = self.scale_and_page()
         scale_x, scale_y = self.logical_scales(origin)
-        if element == "sender":
-            sender_height = max(10, min(28, self.format.sender_height_percent * 0.5))
-            return QRectF(origin.left() + (2 + self.format.sender_offset_x) * scale_x,
-                          origin.top() + (6 + self.format.sender_offset_y) * scale_y,
-                          self.format.sender_width * scale_x, sender_height * scale_y)
-        return QRectF(origin.left() + (2 + self.format.recipient_offset_x) * scale_x,
-                      origin.top() + (22 + self.format.recipient_offset_y) * scale_y,
-                      self.format.recipient_width * scale_x,
-                      self.format.recipient_height * 0.6 * scale_y)
+        base_x, base_y, width, height = self.base_geometry(element)
+        page_width, page_height = self.label_dimensions()
+        offset_x = getattr(self.format, f"{element}_offset_x") * self.LOGICAL_WIDTH / page_width
+        offset_y = getattr(self.format, f"{element}_offset_y") * self.LOGICAL_HEIGHT / page_height
+        return QRectF(origin.left() + (base_x + offset_x) * scale_x,
+                      origin.top() + (base_y + offset_y) * scale_y,
+                      width * scale_x, height * scale_y)
 
     def base_geometry(self, element: str) -> tuple[float, float, float, float]:
+        page_width, page_height = self.label_dimensions()
+        sender_height = page_height * self.format.sender_height_percent / 100
         if element == "sender":
-            sender_height = max(10, min(28, self.format.sender_height_percent * 0.5))
-            return 2, 6, self.format.sender_width, sender_height
-        return 2, 22, self.format.recipient_width, self.format.recipient_height * 0.6
+            return (2 * self.LOGICAL_WIDTH / page_width,
+                 2 * self.LOGICAL_HEIGHT / page_height,
+                self.format.sender_width,
+                sender_height * self.LOGICAL_HEIGHT / page_height)
+        return (2 * self.LOGICAL_WIDTH / page_width,
+              (2 + sender_height) * self.LOGICAL_HEIGHT / page_height,
+            self.format.recipient_width,
+            self.format.recipient_height * self.LOGICAL_HEIGHT / 100)
 
     def handle_rect(self, element: str) -> QRectF:
         rect = self.geometry_for(element)
@@ -354,6 +364,7 @@ class PositionCanvas(QWidget):
 
     def paintEvent(self, event) -> None:
         del event
+        page_width, page_height = self.label_dimensions()
         painter = QPainter(self)
         _, page = self.scale_and_page()
         scale_x, scale_y = self.logical_scales(page)
@@ -376,12 +387,13 @@ class PositionCanvas(QWidget):
             painter.drawRect(self.handle_rect(element))
             family = getattr(self.format, f"{element}_font_family")
             size = getattr(self.format, f"{element}_font_size")
-            font = QFont(family, int(size))
+            minimum_size = 4
+            fitted_size = max(minimum_size, round(size * self.zoom))
+            font = QFont(family, fitted_size)
             font.setBold(getattr(self.format, f"{element}_bold"))
             font.setItalic(getattr(self.format, f"{element}_italic"))
             painter.setFont(font)
             sample = self.sender_text if element == "sender" else self.recipient_text
-            minimum_size = 4
             for fitted_size in range(font.pointSize(), minimum_size - 1, -1):
                 font.setPointSize(fitted_size)
                 bounds = QFontMetricsF(font).boundingRect(
@@ -441,21 +453,22 @@ class PositionCanvas(QWidget):
             new_height = max(10, min(self.LOGICAL_HEIGHT - base_y, new_height))
             if self.active == "sender":
                 self.format.sender_width = new_width
-                self.format.sender_height_percent = new_height * 2
+                self.format.sender_height_percent = new_height * 100 / self.LOGICAL_HEIGHT
             else:
                 self.format.recipient_width = new_width
                 self.format.recipient_height = new_height / 0.6
             self.clamp_offsets()
             self.update()
             return
-        new_x = self.original_offset[0] + delta.x() / scale_x
-        new_y = self.original_offset[1] + delta.y() / scale_y
-        new_x = self.snap_size(new_x)
-        new_y = self.snap_size(new_y)
+        page_width, page_height = self.label_dimensions()
+        original_x = self.original_offset[0] * self.LOGICAL_WIDTH / page_width
+        original_y = self.original_offset[1] * self.LOGICAL_HEIGHT / page_height
+        new_x = self.snap_size(original_x + delta.x() / scale_x)
+        new_y = self.snap_size(original_y + delta.y() / scale_y)
         new_x = max(-base_x, min(new_x, self.LOGICAL_WIDTH - base_x - element_width))
         new_y = max(-base_y, min(new_y, self.LOGICAL_HEIGHT - base_y - element_height))
-        setattr(self.format, f"{self.active}_offset_x", new_x)
-        setattr(self.format, f"{self.active}_offset_y", new_y)
+        setattr(self.format, f"{self.active}_offset_x", new_x * page_width / self.LOGICAL_WIDTH)
+        setattr(self.format, f"{self.active}_offset_y", new_y * page_height / self.LOGICAL_HEIGHT)
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
@@ -468,14 +481,15 @@ class PositionCanvas(QWidget):
         return round(value * 2) / 2
 
     def clamp_offsets(self) -> None:
+        page_width, page_height = self.label_dimensions()
         for element in ("sender", "recipient"):
             base_x, base_y, element_width, element_height = self.base_geometry(element)
-            offset_x = max(-base_x, min(getattr(self.format, f"{element}_offset_x"),
-                                       self.LOGICAL_WIDTH - base_x - element_width))
-            offset_y = max(-base_y, min(getattr(self.format, f"{element}_offset_y"),
-                                       self.LOGICAL_HEIGHT - base_y - element_height))
-            setattr(self.format, f"{element}_offset_x", offset_x)
-            setattr(self.format, f"{element}_offset_y", offset_y)
+            offset_x = getattr(self.format, f"{element}_offset_x") * self.LOGICAL_WIDTH / page_width
+            offset_y = getattr(self.format, f"{element}_offset_y") * self.LOGICAL_HEIGHT / page_height
+            offset_x = max(-base_x, min(offset_x, self.LOGICAL_WIDTH - base_x - element_width))
+            offset_y = max(-base_y, min(offset_y, self.LOGICAL_HEIGHT - base_y - element_height))
+            setattr(self.format, f"{element}_offset_x", offset_x * page_width / self.LOGICAL_WIDTH)
+            setattr(self.format, f"{element}_offset_y", offset_y * page_height / self.LOGICAL_HEIGHT)
 
 
 class PositionEditorDialog(QDialog):
@@ -982,6 +996,10 @@ class FormatSettingsDialog(QDialog):
         self.recipient_font_size = edited.recipient_font_size
         self.recipient_bold = edited.recipient_bold
         self.recipient_italic = edited.recipient_italic
+        self.sender_alignment = edited.sender_alignment
+        self.recipient_alignment = edited.recipient_alignment
+        self.sender_vertical_alignment = edited.sender_vertical_alignment
+        self.recipient_vertical_alignment = edited.recipient_vertical_alignment
         self.update_preview()
 
     def save_format(self) -> None:

@@ -6,6 +6,17 @@
 python3 label_app.py
 ```
 
+Sous Windows, installer les dépendances puis lancer `launcher.bat` :
+
+```bat
+python -m pip install -r requirements.txt
+launcher.bat
+```
+
+L'impression Windows utilise l'imprimante par défaut. Le choix de
+l'imprimante, le nombre de copies et la plage de pages restent disponibles
+avec CUPS sous Linux.
+
 Un autre dossier de CSV peut être fourni en argument :
 
 ```sh
