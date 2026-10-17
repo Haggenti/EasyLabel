@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from format_settings import LabelFormat, PositionCanvas, PositionEditorDialog
+from format_settings import FormatSettingsDialog, LabelFormat, PositionCanvas, PositionEditorDialog
 from label_app import (EnvelopeCanvas, EnvelopeFormatDialog, EnvelopeLayout, LabelWindow,
                        RenderStats, render_envelope_pdf,
                        format_postal_code, render_pdf)
@@ -66,6 +66,26 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(updated.height(), original.height())
         preview.close()
 
+    def test_horizontal_position_has_gentle_magnetic_snapping(self):
+        preview = PositionCanvas(LabelFormat("test"))
+        page_width, _ = preview.label_dimensions()
+        base_x, _, width, _ = preview.base_geometry("recipient")
+        tolerance = preview.SNAP_DISTANCE_MM * preview.LOGICAL_WIDTH / page_width
+        center_position = (preview.LOGICAL_WIDTH - width) / 2 - base_x
+        self.assertAlmostEqual(
+            preview.snap_horizontal_position(
+                "recipient", center_position + tolerance / 2, base_x, width, page_width
+            ),
+            center_position,
+        )
+        self.assertAlmostEqual(
+            preview.snap_horizontal_position(
+                "recipient", center_position + tolerance * 2, base_x, width, page_width
+            ),
+            center_position + tolerance * 2,
+        )
+        preview.close()
+
     def test_envelope_editor_detects_all_resize_edges(self):
         canvas = EnvelopeCanvas(EnvelopeLayout())
         rect = canvas.rect_for("recipient")
@@ -75,6 +95,26 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(canvas.resize_edges("recipient", QPointF(rect.center().x(), rect.bottom())), "b")
         self.assertEqual(canvas.resize_edges("recipient", QPointF(rect.left(), rect.top())), "lt")
         canvas.close()
+
+    def test_automatic_centering_disables_margin_controls(self):
+        dialog = FormatSettingsDialog(LabelFormat("test"), Path("/tmp/tik-formats.json"))
+        dialog.auto_center_horizontal.setChecked(True)
+        expected_left = (dialog.page_width.value()
+                         - dialog.columns.value() * dialog.label_width.value()
+                         - (dialog.columns.value() - 1) * dialog.gap_x.value()) / 2
+        self.assertFalse(dialog.margin_left.isEnabled())
+        self.assertAlmostEqual(dialog.margin_left.value(), expected_left, places=1)
+        dialog.auto_center_horizontal.setChecked(False)
+        self.assertTrue(dialog.margin_left.isEnabled())
+        dialog.close()
+
+    def test_active_format_has_green_check_marker(self):
+        dialog = FormatSettingsDialog(LabelFormat("A4 - 2 x 5"), Path("/tmp/tik-formats.json"))
+        active_item = dialog.find_format_item("A4 - 2 x 5")
+        other_item = dialog.find_format_item("A4 - 3 x 8")
+        self.assertFalse(active_item.icon().isNull())
+        self.assertTrue(other_item.icon().isNull())
+        dialog.close()
 
     def test_envelope_layout_round_trip(self):
         layout = EnvelopeLayout(

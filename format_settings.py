@@ -8,7 +8,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QCursor, QFont, QFontMetricsF, QPainter, QPen
+from PySide6.QtGui import QCursor, QFont, QFontMetricsF, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,6 +26,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QVBoxLayout,
     QWidget,
 )
@@ -189,6 +192,28 @@ def vertical_alignment_flag(value: str) -> Qt.AlignmentFlag:
     }.get(value, Qt.AlignmentFlag.AlignVCenter)
 
 
+class PaddedComboBox(QComboBox):
+    def paintEvent(self, event) -> None:
+        del event
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        text = option.currentText
+        option.currentText = ""
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        text_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxEditField,
+            self,
+        ).adjusted(8, 0, -8, 0)
+        painter.drawItemText(
+            text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            self.palette(), self.isEnabled(), text,
+        )
+
+
 class FormatPreview(QWidget):
     positionChanged = Signal(int, int)
 
@@ -285,6 +310,7 @@ class PositionCanvas(QWidget):
     LOGICAL_WIDTH = 100
     LOGICAL_HEIGHT = 60
     RECIPIENT_TOP_PERCENT = 34
+    SNAP_DISTANCE_MM = 1.5
 
     def __init__(self, label_format: LabelFormat, sender_text: str = "Expéditeur",
                  recipient_text: str = "Destinataire", parent: QWidget | None = None):
@@ -495,10 +521,22 @@ class PositionCanvas(QWidget):
             original_y = base_y + self.original_offset[1] * self.LOGICAL_HEIGHT / page_height
             original_right = original_x + original_width
             original_bottom = original_y + original_height
-            new_x = original_x + delta.x() / scale_x if "l" in edges else original_x
-            new_y = original_y + delta.y() / scale_y if "t" in edges else original_y
-            new_right = original_right + delta.x() / scale_x if "r" in edges else original_right
-            new_bottom = original_bottom + delta.y() / scale_y if "b" in edges else original_bottom
+            delta_x = delta.x() / scale_x
+            delta_y = delta.y() / scale_y
+            symmetric = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            new_x = original_x + delta_x if "l" in edges else original_x
+            new_y = original_y + delta_y if "t" in edges else original_y
+            new_right = original_right + delta_x if "r" in edges else original_right
+            new_bottom = original_bottom + delta_y if "b" in edges else original_bottom
+            if symmetric:
+                if "l" in edges:
+                    new_right = original_right - delta_x
+                elif "r" in edges:
+                    new_x = original_x - delta_x
+                if "t" in edges:
+                    new_bottom = original_bottom - delta_y
+                elif "b" in edges:
+                    new_y = original_y - delta_y
             minimum_width = 30
             minimum_height = 10
             if new_right - new_x < minimum_width:
@@ -535,6 +573,9 @@ class PositionCanvas(QWidget):
         original_y = self.original_offset[1] * self.LOGICAL_HEIGHT / page_height
         new_x = self.snap_size(original_x + delta.x() / scale_x)
         new_y = self.snap_size(original_y + delta.y() / scale_y)
+        new_x = self.snap_horizontal_position(
+            self.active, new_x, base_x, element_width, page_width
+        )
         new_x = max(-base_x, min(new_x, self.LOGICAL_WIDTH - base_x - element_width))
         new_y = max(-base_y, min(new_y, self.LOGICAL_HEIGHT - base_y - element_height))
         setattr(self.format, f"{self.active}_offset_x", new_x * page_width / self.LOGICAL_WIDTH)
@@ -549,6 +590,15 @@ class PositionCanvas(QWidget):
     @staticmethod
     def snap_size(value: float) -> float:
         return round(value * 2) / 2
+
+    def snap_horizontal_position(self, element: str, position: float,
+                                 base_x: float, width: float,
+                                 page_width: float) -> float:
+        del element
+        candidates = [(self.LOGICAL_WIDTH - width) / 2 - base_x]
+        tolerance = self.SNAP_DISTANCE_MM * self.LOGICAL_WIDTH / page_width
+        nearest = min(candidates, key=lambda candidate: abs(candidate - position))
+        return nearest if abs(nearest - position) <= tolerance else position
 
     def clamp_offsets(self) -> None:
         page_width, page_height = self.label_dimensions()
@@ -683,7 +733,10 @@ class PositionEditorDialog(QDialog):
 
     @staticmethod
     def _alignment(value: str) -> QComboBox:
-        control = QComboBox()
+        control = PaddedComboBox()
+        control.setMinimumContentsLength(6)
+        control.setMinimumWidth(92)
+        control.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         for label, data in (("Gauche", "left"), ("Centré", "center"), ("Droite", "right")):
             control.addItem(label, data)
         index = control.findData(value)
@@ -692,7 +745,10 @@ class PositionEditorDialog(QDialog):
 
     @staticmethod
     def _vertical_alignment(value: str) -> QComboBox:
-        control = QComboBox()
+        control = PaddedComboBox()
+        control.setMinimumContentsLength(6)
+        control.setMinimumWidth(92)
+        control.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         for label, data in (("Haut", "top"), ("Centré", "center"), ("Bas", "bottom")):
             control.addItem(label, data)
         index = control.findData(value)
@@ -756,6 +812,8 @@ class PositionEditorDialog(QDialog):
 
 
 class FormatSettingsDialog(QDialog):
+    FORMAT_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
+
     def __init__(self, current: LabelFormat, storage_path: Path,
                  sender_text: str = "Expéditeur", recipient_text: str = "Destinataire",
                  parent: QWidget | None = None, print_test_callback=None):
@@ -767,12 +825,16 @@ class FormatSettingsDialog(QDialog):
         self.recipient_text = recipient_text
         self.formats = self.load_formats()
         self.current_format = current
+        self.active_format_name = current.name
         self.print_test_callback = print_test_callback
 
         self.preset_list = QListWidget()
+        self.preset_list.setMinimumWidth(210)
         self.preset_list.currentItemChanged.connect(self.select_format)
-        for name in self.formats:
-            self.preset_list.addItem(QListWidgetItem(name))
+        for name, values in self.formats.items():
+            item = self.format_list_item(name, values)
+            self.preset_list.addItem(item)
+        self.update_active_format_marker()
 
         self.name = QLineEdit(current.name)
         self.page_width = self._number(current.page_width, 1, 1000)
@@ -791,12 +853,17 @@ class FormatSettingsDialog(QDialog):
         )
         self.margin_right_value = QLabel()
         self.margin_bottom_value = QLabel()
+        self.auto_center_horizontal = QCheckBox("Centrage horizontal automatique")
+        self.auto_center_vertical = QCheckBox("Centrage vertical automatique")
+        self.auto_center_horizontal.stateChanged.connect(self.update_auto_centering)
+        self.auto_center_vertical.stateChanged.connect(self.update_auto_centering)
         for value_label in (self.margin_right_value, self.margin_bottom_value):
             value_label.setMinimumWidth(72)
             value_label.setStyleSheet(
                 "QLabel { background: #eef2f5; border: 1px solid #cbd5dc; "
                 "border-radius: 3px; padding: 4px 7px; }"
             )
+        self.sender_height = current.sender_height
         self.sender_enabled = current.sender_enabled
         self.sender_base_size = current.sender_base_size
         self.sender_min_size = current.sender_min_size
@@ -878,17 +945,13 @@ class FormatSettingsDialog(QDialog):
         cancel_button.clicked.connect(self.reject)
         test_page_button = QPushButton("Imprimer une page de test")
         test_page_button.clicked.connect(self.print_test_page)
-        center_buttons = QHBoxLayout()
-        center_horizontal_button = QPushButton("Centrer horizontalement")
-        center_horizontal_button.clicked.connect(self.center_horizontally)
-        center_vertical_button = QPushButton("Centrer verticalement")
-        center_vertical_button.clicked.connect(self.center_vertically)
-        center_buttons.addWidget(center_horizontal_button)
-        center_buttons.addWidget(center_vertical_button)
+        center_options = QHBoxLayout()
+        center_options.addWidget(self.auto_center_horizontal)
+        center_options.addWidget(self.auto_center_vertical)
 
         editor = QVBoxLayout()
         editor.addLayout(form)
-        editor.addLayout(center_buttons)
+        editor.addLayout(center_options)
         editor.addWidget(position_button)
         editor.addWidget(save_button)
         editor.addWidget(self.geometry_feedback)
@@ -909,9 +972,9 @@ class FormatSettingsDialog(QDialog):
         preview_column.addWidget(self.preview, 1)
         preview_column.addWidget(test_page_button)
         layout.addLayout(preview_column, 2)
-        matching_items = self.preset_list.findItems(current.name, Qt.MatchFlag.MatchExactly)
-        if matching_items:
-            self.preset_list.setCurrentItem(matching_items[0])
+        item = self.find_format_item(current.name)
+        if item is not None:
+            self.preset_list.setCurrentItem(item)
         self.update_preview()
 
     @staticmethod
@@ -943,17 +1006,31 @@ class FormatSettingsDialog(QDialog):
     def load_formats(self) -> dict[str, dict]:
         return load_formats(self.storage_path)
 
+    def format_list_item(self, name: str, values: dict) -> QListWidgetItem:
+        columns = int(values.get("columns", 1))
+        rows = int(values.get("rows", 1))
+        item = QListWidgetItem(f"{name} ({columns} x {rows})")
+        item.setData(self.FORMAT_NAME_ROLE, name)
+        return item
+
+    def find_format_item(self, name: str) -> QListWidgetItem | None:
+        for index in range(self.preset_list.count()):
+            item = self.preset_list.item(index)
+            if item.data(self.FORMAT_NAME_ROLE) == name:
+                return item
+        return None
+
     def select_format(self, item: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
         del previous
         if item is None:
             return
-        values = self.formats[item.text()]
-        self.name.setText(item.text())
-        defaults = asdict(LabelFormat(item.text()))
-        defaults = asdict(LabelFormat(item.text()))
+        name = item.data(self.FORMAT_NAME_ROLE)
+        values = self.formats[name]
+        self.name.setText(name)
+        defaults = asdict(LabelFormat(name))
         for field in ("page_width", "page_height", "columns", "rows", "margin_left", "margin_top", "gap_x", "gap_y"):
             getattr(self, field).setValue(values.get(field, defaults[field]))
-        selected = LabelFormat(item.text(), **values)
+        selected = LabelFormat(name, **values)
         self.label_width.setValue(
             selected.label_width if selected.label_width is not None else self._derived_label_width(selected)
         )
@@ -981,6 +1058,22 @@ class FormatSettingsDialog(QDialog):
             self.preview.format.start_column = self.start_column
             self.preview.format.start_row = self.start_row
             self.preview.update()
+
+    def update_active_format_marker(self) -> None:
+        marker = QPixmap(16, 16)
+        marker.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(marker)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(Qt.GlobalColor.darkGreen, 2.5,
+                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                            Qt.PenJoinStyle.RoundJoin))
+        painter.drawLine(3, 8, 7, 12)
+        painter.drawLine(7, 12, 14, 3)
+        painter.end()
+        icon = QIcon(marker)
+        for index in range(self.preset_list.count()):
+            item = self.preset_list.item(index)
+            item.setIcon(icon if item.data(self.FORMAT_NAME_ROLE) == self.active_format_name else QIcon())
 
     def current_values(self) -> LabelFormat:
         return LabelFormat(
@@ -1019,11 +1112,31 @@ class FormatSettingsDialog(QDialog):
                      - (current.rows - 1) * current.gap_y)
         self.margin_top.setValue(max(0, remaining / 2))
 
+    def update_auto_centering(self) -> None:
+        self.update_preview()
+
+    def apply_auto_centering(self) -> None:
+        self.margin_left.setEnabled(not self.auto_center_horizontal.isChecked())
+        self.margin_top.setEnabled(not self.auto_center_vertical.isChecked())
+        if self.auto_center_horizontal.isChecked():
+            remaining = (self.page_width.value() - self.columns.value() * self.label_width.value()
+                         - (self.columns.value() - 1) * self.gap_x.value())
+            self.margin_left.blockSignals(True)
+            self.margin_left.setValue(max(0, remaining / 2))
+            self.margin_left.blockSignals(False)
+        if self.auto_center_vertical.isChecked():
+            remaining = (self.page_height.value() - self.rows.value() * self.label_height.value()
+                         - (self.rows.value() - 1) * self.gap_y.value())
+            self.margin_top.blockSignals(True)
+            self.margin_top.setValue(max(0, remaining / 2))
+            self.margin_top.blockSignals(False)
+
     def print_test_page(self) -> None:
         if self.print_test_callback is not None:
             self.print_test_callback(self.current_values())
 
     def update_preview(self) -> None:
+        self.apply_auto_centering()
         current = self.current_values()
         self.preview.set_format(current)
         right_space = (current.page_width - current.margin_left
@@ -1083,8 +1196,11 @@ class FormatSettingsDialog(QDialog):
         except OSError as error:
             QMessageBox.warning(self, "Enregistrement impossible", str(error))
             return
-        if not self.preset_list.findItems(label_format.name, Qt.MatchFlag.MatchExactly):
-            self.preset_list.addItem(label_format.name)
+        item = self.find_format_item(label_format.name)
+        if item is None:
+            self.preset_list.addItem(self.format_list_item(label_format.name, asdict(label_format)))
+        else:
+            item.setText(self.format_list_item(label_format.name, asdict(label_format)).text())
         self.save_feedback.setText(f"✓ Format enregistré : {label_format.name}")
         self.save_feedback.setVisible(True)
         QTimer.singleShot(4000, self.save_feedback.hide)
@@ -1098,7 +1214,8 @@ class FormatSettingsDialog(QDialog):
                 self, "Dernier format", "Il doit rester au moins un format enregistré."
             )
             return
-        self.formats.pop(item.text(), None)
+        name = item.data(self.FORMAT_NAME_ROLE)
+        self.formats.pop(name, None)
         try:
             save_formats(self.storage_path, self.formats)
         except OSError as error:
