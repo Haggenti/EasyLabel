@@ -8,7 +8,8 @@ from unittest.mock import Mock, patch
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from format_settings import FormatSettingsDialog, LabelFormat, PositionCanvas, PositionEditorDialog
+from format_settings import (FormatSettingsDialog, LabelFormat, PositionCanvas,
+                              PositionEditorDialog, load_formats)
 from label_app import (EnvelopeCanvas, EnvelopeFormatDialog, EnvelopeLayout, LabelWindow,
                        RenderStats, render_envelope_pdf,
                        format_postal_code, render_pdf)
@@ -26,6 +27,33 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(label_format.sender_enabled)
         self.assertEqual(label_format.sender_font_size, 9)
         self.assertEqual(label_format.recipient_font_size, 15)
+        self.assertEqual(label_format.corner_radius, 0)
+
+    def test_old_format_defaults_corner_radius_to_zero(self):
+        path = Path(tempfile.mktemp(suffix=".json"))
+        path.write_text(json.dumps({"Ancien": {"page_width": 210}}), encoding="utf-8")
+        try:
+            formats = load_formats(path)
+            self.assertEqual(formats["Ancien"]["corner_radius"], 0)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_format_corner_radius_round_trip_and_clamp(self):
+        path = Path(tempfile.mktemp(suffix=".json"))
+        path.write_text(json.dumps({"Rond": {"page_width": 210, "corner_radius": 30}}), encoding="utf-8")
+        try:
+            formats = load_formats(path)
+            self.assertEqual(formats["Rond"]["corner_radius"], 30)
+            dialog = FormatSettingsDialog(LabelFormat("Rond", label_width=40,
+                                                       label_height=20, corner_radius=30), path)
+            dialog.label_width.setValue(40)
+            dialog.label_height.setValue(20)
+            dialog.update_corner_radius_range()
+            self.assertEqual(dialog.corner_radius.maximum(), 10)
+            self.assertEqual(dialog.corner_radius.value(), 10)
+            dialog.close()
+        finally:
+            path.unlink(missing_ok=True)
 
     def test_postal_code_is_padded_to_five_digits(self):
         self.assertEqual(format_postal_code("3250"), "03250")
@@ -146,6 +174,18 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(output.exists())
         self.assertGreater(stats.labels, 0)
         self.assertEqual(stats.pages, (stats.labels + 9) // 10)
+        output.unlink(missing_ok=True)
+
+    def test_render_with_rounded_guides(self):
+        csv_path = next(Path("csv").glob("*.csv"))
+        output = Path("/tmp/tik-test-rounded-labels.pdf")
+        stats = render_pdf(
+            [load_csv(csv_path)], output, 2, 5, 10, 10, 3, 3,
+            show_guides=True, corner_radius=6,
+        )
+
+        self.assertTrue(output.exists())
+        self.assertGreater(stats.labels, 0)
         output.unlink(missing_ok=True)
 
     def test_render_envelope_with_custom_layout(self):

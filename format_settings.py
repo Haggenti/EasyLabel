@@ -116,6 +116,8 @@ def _normalise_format(name: object, values: object) -> tuple[str | None, dict | 
         return None, None
     if label_format.columns < 1 or label_format.rows < 1:
         return None, None
+    if label_format.corner_radius < 0:
+        return None, None
     return name, normalised
 
 
@@ -175,6 +177,7 @@ class LabelFormat:
     start_row: int = 1
     label_width: float | None = None
     label_height: float | None = None
+    corner_radius: float = 0
 
 
 def alignment_flag(value: str, vertical: Qt.AlignmentFlag) -> Qt.AlignmentFlag:
@@ -265,12 +268,18 @@ class FormatPreview(QWidget):
             for column in range(self.format.columns):
                 x = self.format.margin_left + column * (label_width + self.format.gap_x)
                 y = self.format.margin_top + row * (label_height + self.format.gap_y)
-                painter.drawRect(QRectF(page.left() + x * scale, page.top() + y * scale,
-                                        label_width * scale, label_height * scale))
+                rect = QRectF(page.left() + x * scale, page.top() + y * scale,
+                              label_width * scale, label_height * scale)
+                radius = min(self.format.corner_radius * scale,
+                             rect.width() / 2, rect.height() / 2)
+                painter.drawRoundedRect(rect, radius, radius)
         marker_rect = self.label_rect(self.format.start_column, self.format.start_row)
         painter.setPen(QPen(Qt.GlobalColor.red, 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(marker_rect.adjusted(2, 2, -2, -2))
+        marker_rect = marker_rect.adjusted(2, 2, -2, -2)
+        radius = min(self.format.corner_radius * scale,
+                 marker_rect.width() / 2, marker_rect.height() / 2)
+        painter.drawRoundedRect(marker_rect, radius, radius)
         painter.setFont(QFont("DejaVu Sans", max(8, int(marker_rect.height() * 0.4))))
         painter.drawText(marker_rect, Qt.AlignmentFlag.AlignCenter, "1*")
 
@@ -433,7 +442,10 @@ class PositionCanvas(QWidget):
         scale_x, scale_y = self.logical_scales(page)
         painter.fillRect(page, Qt.GlobalColor.white)
         painter.setPen(QPen(Qt.GlobalColor.darkGray, 1))
-        painter.drawRect(page)
+        radius = min(self.format.corner_radius * scale_x,
+                 self.format.corner_radius * scale_y,
+                 page.width() / 2, page.height() / 2)
+        painter.drawRoundedRect(page, radius, radius)
         painter.setPen(QPen(Qt.GlobalColor.lightGray, 1))
         for x in range(0, self.LOGICAL_WIDTH + 1, 2):
             for y in range(0, self.LOGICAL_HEIGHT + 1, 2):
@@ -851,6 +863,7 @@ class FormatSettingsDialog(QDialog):
         self.label_height = self._number(
             current.label_height if current.label_height is not None else self._derived_label_height(current), 0.1, 1000
         )
+        self.corner_radius = self._number(current.corner_radius, 0, 1000)
         self.margin_right_value = QLabel()
         self.margin_bottom_value = QLabel()
         self.auto_center_horizontal = QCheckBox("Centrage horizontal automatique")
@@ -894,7 +907,7 @@ class FormatSettingsDialog(QDialog):
         self.preview.positionChanged.connect(self.set_start_position)
         self.controls = (self.name, self.page_width, self.page_height, self.columns,
                  self.rows, self.margin_left, self.margin_top, self.gap_x, self.gap_y,
-                 self.label_width, self.label_height)
+                 self.label_width, self.label_height, self.corner_radius)
         for control in self.controls:
             if hasattr(control, "textChanged"):
                 control.textChanged.connect(self.update_preview)
@@ -907,7 +920,7 @@ class FormatSettingsDialog(QDialog):
             ("Hauteur page (mm)", self.page_height), ("Colonnes", self.columns),
             ("Lignes", self.rows), ("Marge gauche (mm)", self.margin_left),
             ("Marge haut (mm)", self.margin_top), ("Espace horizontal (mm)", self.gap_x),
-            ("Espace vertical (mm)", self.gap_y),
+            ("Espace vertical (mm)", self.gap_y), ("Rayon des coins (mm)", self.corner_radius),
         )
         for row, (label, control) in enumerate(fields):
             form.addWidget(QLabel(label), row, 0)
@@ -1037,6 +1050,7 @@ class FormatSettingsDialog(QDialog):
         self.label_height.setValue(
             selected.label_height if selected.label_height is not None else self._derived_label_height(selected)
         )
+        self.corner_radius.setValue(selected.corner_radius)
         self.sender_height = values.get("sender_height", defaults["sender_height"])
         self.sender_base_size = values.get("sender_base_size", defaults["sender_base_size"])
         self.sender_min_size = values.get("sender_min_size", defaults["sender_min_size"])
@@ -1093,6 +1107,7 @@ class FormatSettingsDialog(QDialog):
             self.sender_vertical_alignment, self.recipient_vertical_alignment,
             self.start_column, self.start_row,
             self.label_width.value(), self.label_height.value(),
+            self.corner_radius.value(),
         )
 
     def set_start_position(self, column: int, row: int) -> None:
@@ -1115,6 +1130,10 @@ class FormatSettingsDialog(QDialog):
     def update_auto_centering(self) -> None:
         self.update_preview()
 
+    def update_corner_radius_range(self) -> None:
+        maximum = min(self.label_width.value(), self.label_height.value()) / 2
+        self.corner_radius.setRange(0, max(0, maximum))
+
     def apply_auto_centering(self) -> None:
         self.margin_left.setEnabled(not self.auto_center_horizontal.isChecked())
         self.margin_top.setEnabled(not self.auto_center_vertical.isChecked())
@@ -1136,6 +1155,7 @@ class FormatSettingsDialog(QDialog):
             self.print_test_callback(self.current_values())
 
     def update_preview(self) -> None:
+        self.update_corner_radius_range()
         self.apply_auto_centering()
         current = self.current_values()
         self.preview.set_format(current)

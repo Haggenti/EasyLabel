@@ -611,7 +611,8 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
                sender_alignment: str = "center", recipient_alignment: str = "center",
                sender_vertical_alignment: str = "top",
                recipient_vertical_alignment: str = "center",
-               label_width: float | None = None, label_height: float | None = None) -> RenderStats:
+               label_width: float | None = None, label_height: float | None = None,
+               corner_radius: float = 0) -> RenderStats:
     writer = QPdfWriter(str(output_path))
     writer.setPageSize(QPageSize(QSizeF(page_width, page_height), QPageSize.Unit.Millimeter))
     writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter)
@@ -646,7 +647,8 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
             if show_guides:
                 painter.save()
                 painter.setPen(QPen(Qt.GlobalColor.gray, 0.5, Qt.PenStyle.DashLine))
-                painter.drawRect(label_rect)
+                radius = min(mm(corner_radius), label_rect.width() / 2, label_rect.height() / 2)
+                painter.drawRoundedRect(label_rect, radius, radius)
                 painter.restore()
             sender_height_points = mm(sender_height)
             sender_rect = QRectF(
@@ -712,7 +714,8 @@ def render_test_sheet(output_path: Path, page_width: float, page_height: float,
                       columns: int, rows: int, margin_left: float,
                       margin_top: float, gap_x: float, gap_y: float,
                       label_width: float | None = None,
-                      label_height: float | None = None) -> RenderStats:
+                      label_height: float | None = None,
+                      corner_radius: float = 0) -> RenderStats:
     writer = QPdfWriter(str(output_path))
     writer.setPageSize(QPageSize(QSizeF(page_width, page_height), QPageSize.Unit.Millimeter))
     writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter)
@@ -739,7 +742,9 @@ def render_test_sheet(output_path: Path, page_width: float, page_height: float,
         for column in range(columns):
             x = mm(margin_left + column * (label_width_points / POINTS_PER_MM + gap_x))
             y = mm(margin_top + row * (label_height_points / POINTS_PER_MM + gap_y))
-            painter.drawRect(QRectF(x, y, label_width_points, label_height_points))
+            rect = QRectF(x, y, label_width_points, label_height_points)
+            radius = min(mm(corner_radius), rect.width() / 2, rect.height() / 2)
+            painter.drawRoundedRect(rect, radius, radius)
     painter.end()
     stats = RenderStats()
     stats.pages = 1
@@ -1261,6 +1266,7 @@ class LabelWindow(QMainWindow):
         self.gap_y = self._spin_box(3, 0, 30, 1)
         self.label_width: float | None = None
         self.label_height: float | None = None
+        self.corner_radius = 0.0
         self.page_width = 210.0
         self.page_height = 297.0
         self.format_name = "A4 - 2 x 5"
@@ -2072,6 +2078,7 @@ class LabelWindow(QMainWindow):
         self.gap_y.setValue(values["gap_y"])
         self.label_width = values.get("label_width")
         self.label_height = values.get("label_height")
+        self.corner_radius = values.get("corner_radius", 0)
         self.sender_height = values.get("sender_height", 18)
         self.sender_enabled = values.get("sender_enabled", True)
         self.sender_base_size = values.get("sender_base_size", 9)
@@ -2111,6 +2118,7 @@ class LabelWindow(QMainWindow):
         self.gap_y.setValue(selected.gap_y)
         self.label_width = selected.label_width
         self.label_height = selected.label_height
+        self.corner_radius = selected.corner_radius
         self.sender_height = selected.sender_height
         self.sender_enabled = selected.sender_enabled
         self.sender_base_size = selected.sender_base_size
@@ -2173,7 +2181,7 @@ class LabelWindow(QMainWindow):
             self.sender_alignment, self.recipient_alignment,
             self.sender_vertical_alignment, self.recipient_vertical_alignment,
             self.start_column.value(), self.start_row.value(),
-            self.label_width, self.label_height,
+            self.label_width, self.label_height, self.corner_radius,
         )
         dialog = FormatSettingsDialog(
             current, self.directory / "formats.json", sample_sender,
@@ -2207,6 +2215,7 @@ class LabelWindow(QMainWindow):
                     self.margin_left.value(), self.margin_top.value(),
                     self.gap_x.value(), self.gap_y.value(),
                     self.label_width, self.label_height,
+                    self.corner_radius,
                 )
             except Exception:
                 output.unlink(missing_ok=True)
@@ -2262,7 +2271,8 @@ class LabelWindow(QMainWindow):
                                    self.sender_alignment, self.recipient_alignment,
                                    self.sender_vertical_alignment,
                                    self.recipient_vertical_alignment,
-                                   self.label_width, self.label_height)
+                                   self.label_width, self.label_height,
+                                   self.corner_radius)
         except Exception:
             output.unlink(missing_ok=True)
             raise
