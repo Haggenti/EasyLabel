@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QPoint, QPointF, QSettings, QRectF, QSize, QSizeF, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QFontMetricsF, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QPixmap, QTransform
+from PySide6.QtGui import QAction, QActionGroup, QCursor, QDesktopServices, QFont, QFontMetricsF, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QPixmap, QTransform
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
     QGroupBox,
+    QInputDialog,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -210,6 +211,7 @@ class EnvelopeCanvas(QWidget):
         self.zoom = 1.0
         self.pan_start = None
         self.pan_scroll_start = None
+        self.setMouseTracking(True)
         self.setMinimumSize(700, 400)
         self.resize(self.canvas_size())
 
@@ -271,9 +273,33 @@ class EnvelopeCanvas(QWidget):
         return QRectF(page.left() + x * scale, page.top() + y * scale,
                       width * scale, height * scale)
 
-    def handle_rect(self, element: str) -> QRectF:
+    def resize_edges(self, element: str, position: QPointF) -> str:
         rect = self.rect_for(element)
-        return QRectF(rect.right() - 8, rect.top() - 8, 16, 16)
+        tolerance = 8.0
+        if not rect.adjusted(-tolerance, -tolerance, tolerance, tolerance).contains(position):
+            return ""
+        edges = ""
+        if abs(position.x() - rect.left()) <= tolerance:
+            edges += "l"
+        elif abs(position.x() - rect.right()) <= tolerance:
+            edges += "r"
+        if abs(position.y() - rect.top()) <= tolerance:
+            edges += "t"
+        elif abs(position.y() - rect.bottom()) <= tolerance:
+            edges += "b"
+        return edges
+
+    @staticmethod
+    def cursor_for_edges(edges: str) -> Qt.CursorShape:
+        if edges in ("lt", "rb"):
+            return Qt.CursorShape.SizeFDiagCursor
+        if edges in ("rt", "lb"):
+            return Qt.CursorShape.SizeBDiagCursor
+        if edges in ("l", "r"):
+            return Qt.CursorShape.SizeHorCursor
+        if edges in ("t", "b"):
+            return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.ArrowCursor
 
     def draw_postal_code(self, painter: QPainter, rect: QRectF, scale: float) -> None:
         postal_code = format_postal_code(self.postal_code_text)
@@ -375,8 +401,6 @@ class EnvelopeCanvas(QWidget):
             painter.setPen(QPen(color, 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
-            painter.setBrush(color)
-            painter.drawRect(self.handle_rect(element))
             font = QFont(getattr(self.layout_data, f"{element}_font_family"))
             font.setPixelSize(round(
                 getattr(self.layout_data, f"{element}_font_size")
@@ -400,8 +424,6 @@ class EnvelopeCanvas(QWidget):
             painter.setPen(QPen(Qt.GlobalColor.darkRed, 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
-            painter.setBrush(Qt.GlobalColor.darkRed)
-            painter.drawRect(self.handle_rect("postal_code"))
             painter.setPen(Qt.GlobalColor.darkRed)
             self.draw_postal_code(painter, rect, scale)
         del scale
@@ -413,9 +435,10 @@ class EnvelopeCanvas(QWidget):
                 continue
             if element == "sender" and not self.layout_data.sender_enabled:
                 continue
-            if self.handle_rect(element).contains(event.position()):
+            edges = self.resize_edges(element, event.position())
+            if edges:
                 self.active = element
-                self.drag_mode = "resize"
+                self.drag_mode = f"resize:{edges}"
                 self.drag_start = event.position()
                 self.original_offset = (getattr(self.layout_data, f"{element}_x"),
                                         getattr(self.layout_data, f"{element}_y"))
@@ -467,21 +490,52 @@ class EnvelopeCanvas(QWidget):
             event.accept()
             return
         if not self.active or self.drag_start is None:
+            elements = ("postal_code", "recipient", "sender")
+            for element in elements:
+                if element == "postal_code" and not self.layout_data.postal_code_enabled:
+                    continue
+                if element == "sender" and not self.layout_data.sender_enabled:
+                    continue
+                edges = self.resize_edges(element, event.position())
+                if edges:
+                    self.setCursor(QCursor(self.cursor_for_edges(edges)))
+                    return
+            self.unsetCursor()
             return
         scale, _ = self.scale_and_page()
         delta = event.position() - self.drag_start
-        if self.drag_mode == "resize":
+        if self.drag_mode.startswith("resize:"):
+            edges = self.drag_mode.split(":", 1)[1]
             minimum_width = 5 if self.active == "postal_code" else 20
             minimum_height = 5 if self.active == "postal_code" else 10
-            width = max(minimum_width, min(self.layout_data.page_width - self.original_offset[0],
-                                self.original_size[0] + delta.x() / scale))
-            bottom = self.original_offset[1] + self.original_size[1]
-            top = max(0, min(bottom - minimum_height,
-                             self.original_offset[1] + delta.y() / scale))
-            height = bottom - top
-            setattr(self.layout_data, f"{self.active}_y", round(top * 2) / 2)
-            setattr(self.layout_data, f"{self.active}_width", round(width * 2) / 2)
-            setattr(self.layout_data, f"{self.active}_height", round(height * 2) / 2)
+            original_x, original_y = self.original_offset
+            original_width, original_height = self.original_size
+            original_right = original_x + original_width
+            original_bottom = original_y + original_height
+            new_x = original_x + delta.x() / scale if "l" in edges else original_x
+            new_y = original_y + delta.y() / scale if "t" in edges else original_y
+            new_right = original_right + delta.x() / scale if "r" in edges else original_right
+            new_bottom = original_bottom + delta.y() / scale if "b" in edges else original_bottom
+            if new_right - new_x < minimum_width:
+                if "l" in edges:
+                    new_x = new_right - minimum_width
+                else:
+                    new_right = new_x + minimum_width
+            if new_bottom - new_y < minimum_height:
+                if "t" in edges:
+                    new_y = new_bottom - minimum_height
+                else:
+                    new_bottom = new_y + minimum_height
+            new_x = max(0, min(new_x, self.layout_data.page_width - minimum_width))
+            new_y = max(0, min(new_y, self.layout_data.page_height - minimum_height))
+            new_right = max(new_x + minimum_width,
+                            min(new_right, self.layout_data.page_width))
+            new_bottom = max(new_y + minimum_height,
+                             min(new_bottom, self.layout_data.page_height))
+            setattr(self.layout_data, f"{self.active}_x", round(new_x * 2) / 2)
+            setattr(self.layout_data, f"{self.active}_y", round(new_y * 2) / 2)
+            setattr(self.layout_data, f"{self.active}_width", round((new_right - new_x) * 2) / 2)
+            setattr(self.layout_data, f"{self.active}_height", round((new_bottom - new_y) * 2) / 2)
         else:
             x = max(0, min(self.layout_data.page_width - self.original_size[0],
                            self.original_offset[0] + delta.x() / scale))
@@ -543,7 +597,7 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
                margin_left: float, margin_top: float, gap_x: float, gap_y: float,
                start_column: int = 1, start_row: int = 1,
                page_width: float = 210, page_height: float = 297,
-               show_guides: bool = False, sender_height_percent: float = 34,
+               show_guides: bool = False, sender_height: float = 18,
                sender_base_size: float = 9, sender_min_size: float = 6,
                sender_offset_x: float = 0, sender_offset_y: float = 0,
                recipient_offset_x: float = 0, recipient_offset_y: float = 0,
@@ -594,16 +648,16 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
                 painter.setPen(QPen(Qt.GlobalColor.gray, 0.5, Qt.PenStyle.DashLine))
                 painter.drawRect(label_rect)
                 painter.restore()
-            sender_height = label_height_points * sender_height_percent / 100
+            sender_height_points = mm(sender_height)
             sender_rect = QRectF(
                 label_rect.left() + mm(2) + mm(sender_offset_x),
                 label_rect.top() + mm(2) + mm(sender_offset_y),
                 label_width_points * sender_width / 100,
-                sender_height,
+                sender_height_points,
             )
             recipient_rect = QRectF(
                 label_rect.left() + mm(2) + mm(recipient_offset_x),
-                label_rect.top() + sender_height + mm(2) + mm(recipient_offset_y),
+                label_rect.top() + label_height_points * 34 / 100 + mm(recipient_offset_y),
                 label_width_points * recipient_width / 100,
                 label_height_points * recipient_height / 100,
             )
@@ -1181,63 +1235,10 @@ class EnvelopeFormatDialog(QDialog):
         return self.active_name, self.current_layout, self.formats
 
 
-class PrintOptionsDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Options d'impression")
-        self.copies = QSpinBox()
-        self.copies.setRange(1, 99)
-        self.page_range = QLineEdit()
-        self.page_range.setPlaceholderText("Toutes les pages")
-
-        grid = QGridLayout()
-        grid.addWidget(QLabel("Nombre de copies"), 0, 0)
-        grid.addWidget(self.copies, 0, 1)
-        grid.addWidget(QLabel("Pages à imprimer"), 1, 0)
-        grid.addWidget(self.page_range, 1, 1)
-        cancel_button = QPushButton("Annuler")
-        cancel_button.clicked.connect(self.reject)
-        print_button = QPushButton("Imprimer")
-        print_button.clicked.connect(self.validate_and_accept)
-        buttons = QHBoxLayout()
-        buttons.addStretch()
-        buttons.addWidget(cancel_button)
-        buttons.addWidget(print_button)
-        layout = QVBoxLayout(self)
-        layout.addLayout(grid)
-        layout.addLayout(buttons)
-
-    def validate_and_accept(self) -> None:
-        if self.parse_page_range(self.page_range.text()) is not None:
-            self.accept()
-            return
-        QMessageBox.warning(
-            self, "Plage de pages invalide",
-            "Utilisez par exemple : 1, 2-4 ou 1,3,5."
-        )
-
-    @staticmethod
-    def parse_page_range(value: str) -> list[int] | None:
-        value = value.strip()
-        if not value:
-            return []
-        pages: set[int] = set()
-        for part in value.split(","):
-            part = part.strip()
-            if re.fullmatch(r"[1-9][0-9]*", part):
-                pages.add(int(part))
-                continue
-            match = re.fullmatch(r"([1-9][0-9]*)\s*-\s*([1-9][0-9]*)", part)
-            if not match:
-                return None
-            start, end = (int(group) for group in match.groups())
-            if start > end:
-                return None
-            pages.update(range(start, end + 1))
-        return sorted(pages)
-
-
 class LabelWindow(QMainWindow):
+    COPIES_ROLE = Qt.ItemDataRole.UserRole + 1
+    BASE_LABEL_ROLE = Qt.ItemDataRole.UserRole + 2
+
     def __init__(self, directory: Path):
         super().__init__()
         self.setWindowTitle("Impression d'étiquettes et d'enveloppes")
@@ -1263,7 +1264,7 @@ class LabelWindow(QMainWindow):
         self.page_width = 210.0
         self.page_height = 297.0
         self.format_name = "A4 - 2 x 5"
-        self.sender_height_percent = 34.0
+        self.sender_height = 18.0
         self.sender_enabled = True
         self.sender_base_size = 9.0
         self.sender_min_size = 6.0
@@ -1353,6 +1354,8 @@ class LabelWindow(QMainWindow):
         self.select_all_checkbox = QCheckBox("Sélectionner tous les fichiers")
         self.select_all_checkbox.setTristate(True)
         self.select_all_checkbox.stateChanged.connect(self.select_all_changed)
+        self.global_copies = self._spin_box(1, 1, 99)
+        self.global_copies.valueChanged.connect(self.update_summary)
         self.file_filter = QLineEdit()
         self.file_filter.setPlaceholderText("Filtrer les fichiers...")
         self.file_filter.setClearButtonEnabled(True)
@@ -1426,6 +1429,9 @@ class LabelWindow(QMainWindow):
         selection_header = QHBoxLayout()
         selection_header.addWidget(self.select_all_checkbox)
         selection_header.addStretch()
+        selection_header.addWidget(QLabel("Exemplaires globaux"))
+        selection_header.addWidget(self.global_copies)
+        selection_header.addStretch()
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Filtre"))
         filter_row.addWidget(self.file_filter, 1)
@@ -1489,7 +1495,7 @@ class LabelWindow(QMainWindow):
         default_name = "formats-enveloppes.json" if mode == "envelopes" else "formats-etiquettes.json"
         path, _ = QFileDialog.getSaveFileName(
             self, "Exporter les formats", str(self.directory / default_name),
-            "Fichiers JSON (*.json)"
+            "Fichiers JSON (*.json)", options=QFileDialog.Option.DontUseNativeDialog
         )
         if not path:
             return
@@ -1619,6 +1625,9 @@ class LabelWindow(QMainWindow):
             label = f"{path.name} (erreur : {error})"
         item = QListWidgetItem(label)
         item.setData(Qt.ItemDataRole.UserRole, str(path))
+        item.setData(self.COPIES_ROLE, 1)
+        item.setData(self.BASE_LABEL_ROLE, label)
+        item.setText(f"{label}  x1")
         if document is not None and document.issues:
             item.setToolTip("\n".join(document.issues))
         item.setCheckState(Qt.CheckState.Unchecked)
@@ -1643,7 +1652,23 @@ class LabelWindow(QMainWindow):
         open_action.triggered.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         )
+        copies_action = menu.addAction("Nombre d'exemplaires...")
+        copies_action.triggered.connect(lambda: self.set_file_copies(item))
         menu.exec(self.file_list.mapToGlobal(position))
+
+    def set_file_copies(self, item: QListWidgetItem) -> None:
+        path = Path(item.data(Qt.ItemDataRole.UserRole))
+        current = int(item.data(self.COPIES_ROLE) or 1)
+        copies, accepted = QInputDialog.getInt(
+            self, "Nombre d'exemplaires",
+            f"Exemplaires pour {path.name} :", current, 1, 99, 1,
+        )
+        if not accepted:
+            return
+        item.setData(self.COPIES_ROLE, copies)
+        base_label = item.data(self.BASE_LABEL_ROLE) or item.text()
+        item.setText(f"{base_label}  x{copies}")
+        self.update_summary()
 
     def choose_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Sélectionner des CSV", str(self.directory), "CSV (*.csv)")
@@ -1683,10 +1708,11 @@ class LabelWindow(QMainWindow):
             if item.checkState() == Qt.CheckState.Checked:
                 path = Path(item.data(Qt.ItemDataRole.UserRole))
                 try:
-                    documents.append(load_csv(path))
+                    document = load_csv(path)
+                    documents.extend([document] * int(item.data(self.COPIES_ROLE) or 1))
                 except (OSError, UnicodeError, ValueError, csv.Error) as error:
                     raise ValueError(f"Impossible de lire {path.name} : {error}") from error
-        return documents
+        return documents * self.global_copies.value()
 
     def update_summary(self) -> None:
         documents = []
@@ -1701,9 +1727,11 @@ class LabelWindow(QMainWindow):
             if item.checkState() != Qt.CheckState.Checked:
                 continue
             try:
-                documents.append(load_csv(Path(item.data(Qt.ItemDataRole.UserRole))))
+                document = load_csv(Path(item.data(Qt.ItemDataRole.UserRole)))
+                documents.extend([document] * int(item.data(self.COPIES_ROLE) or 1))
             except (OSError, UnicodeError, ValueError, csv.Error):
                 continue
+        documents *= self.global_copies.value()
         if active_count and active_selected_count == active_count:
             checkbox_state = Qt.CheckState.Checked
         elif active_selected_count:
@@ -2044,7 +2072,7 @@ class LabelWindow(QMainWindow):
         self.gap_y.setValue(values["gap_y"])
         self.label_width = values.get("label_width")
         self.label_height = values.get("label_height")
-        self.sender_height_percent = values.get("sender_height_percent", 34)
+        self.sender_height = values.get("sender_height", 18)
         self.sender_enabled = values.get("sender_enabled", True)
         self.sender_base_size = values.get("sender_base_size", 9)
         self.sender_min_size = values.get("sender_min_size", 6)
@@ -2083,7 +2111,7 @@ class LabelWindow(QMainWindow):
         self.gap_y.setValue(selected.gap_y)
         self.label_width = selected.label_width
         self.label_height = selected.label_height
-        self.sender_height_percent = selected.sender_height_percent
+        self.sender_height = selected.sender_height
         self.sender_enabled = selected.sender_enabled
         self.sender_base_size = selected.sender_base_size
         self.sender_min_size = selected.sender_min_size
@@ -2134,7 +2162,7 @@ class LabelWindow(QMainWindow):
             self.format_name, self.page_width, self.page_height,
             self.columns.value(), self.rows.value(), self.margin_left.value(),
             self.margin_top.value(), self.gap_x.value(), self.gap_y.value(),
-            self.sender_height_percent, self.sender_base_size, self.sender_min_size,
+            self.sender_height, self.sender_base_size, self.sender_min_size,
             self.sender_offset_x, self.sender_offset_y,
             self.recipient_offset_x, self.recipient_offset_y,
             self.sender_width, self.recipient_width, self.recipient_height,
@@ -2221,7 +2249,7 @@ class LabelWindow(QMainWindow):
                                    self.gap_x.value(), self.gap_y.value(),
                                    self.start_column.value(), self.start_row.value(),
                                    self.page_width, self.page_height,
-                                   show_guides, self.sender_height_percent,
+                                   show_guides, self.sender_height,
                                    self.sender_base_size, self.sender_min_size,
                                    self.sender_offset_x, self.sender_offset_y,
                                    self.recipient_offset_x, self.recipient_offset_y,
@@ -2251,7 +2279,10 @@ class LabelWindow(QMainWindow):
         temporary_pdf = None
         try:
             temporary_pdf, stats = self.create_pdf(show_guides=False)
-            output, _ = QFileDialog.getSaveFileName(self, "Exporter le PDF", str(self.directory / "etiquettes.pdf"), "PDF (*.pdf)")
+            output, _ = QFileDialog.getSaveFileName(
+                self, "Exporter le PDF", str(self.directory / "etiquettes.pdf"),
+                "PDF (*.pdf)", options=QFileDialog.Option.DontUseNativeDialog
+            )
             if output:
                 Path(output).write_bytes(temporary_pdf.read_bytes())
             if output:
@@ -2280,27 +2311,19 @@ class LabelWindow(QMainWindow):
 
 
     def print_pdf(self, test_page_override: bool | None = None) -> None:
-        options = PrintOptionsDialog(self)
-        if test_page_override is not None:
-            if test_page_override:
-                options.page_range.setText("1")
-            options.page_range.setEnabled(False)
-        if options.exec() != QDialog.DialogCode.Accepted:
-            return
         pdf_path = None
         try:
             test_page = bool(test_page_override)
             self._test_page_requested = test_page
             pdf_path, stats = self.create_pdf(show_guides=test_page)
-            page_range = "1" if test_page else options.page_range.text().strip()
-            page_summary = "page de test (page 1)" if test_page else (page_range or "toutes les pages")
             printer_summary = self.printers.currentText()
             mode_summary = "enveloppes" if self.mode.currentIndex() == 1 else "étiquettes"
             confirmation = (
                 f"Imprimante : {printer_summary}\n"
                 f"Mode : {mode_summary}\n"
-                f"Copies : {options.copies.value()}\n"
-                f"Pages : {page_summary}\n\n"
+                f"Exemplaires globaux : {self.global_copies.value()}\n"
+                f"Étiquettes à imprimer : {stats.labels}\n"
+                f"Pages nécessaires : {stats.pages}\n\n"
                 "Lancer l'impression ?"
             )
             if QMessageBox.question(
@@ -2321,9 +2344,7 @@ class LabelWindow(QMainWindow):
                         and abs(self.page_height - 297) < 0.1):
                     command.extend(["-o", "media=A4"])
                 command.extend(["-o", "print-scaling=none"])
-                command.extend(["-n", str(options.copies.value())])
-                if page_range:
-                    command.extend(["-P", page_range])
+                command.extend(["-n", "1"])
                 command.append(str(pdf_path))
                 result = subprocess.run(
                     command, capture_output=True, text=True, check=False, timeout=30

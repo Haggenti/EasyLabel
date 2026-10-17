@@ -5,11 +5,12 @@ from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from format_settings import LabelFormat, PositionEditorDialog
-from label_app import (EnvelopeFormatDialog, EnvelopeLayout, LabelWindow,
-                       PrintOptionsDialog, RenderStats, render_envelope_pdf,
+from format_settings import LabelFormat, PositionCanvas, PositionEditorDialog
+from label_app import (EnvelopeCanvas, EnvelopeFormatDialog, EnvelopeLayout, LabelWindow,
+                       RenderStats, render_envelope_pdf,
                        format_postal_code, render_pdf)
 from label_printer import load_csv
 
@@ -45,6 +46,35 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(dialog.canvas.format.recipient_font_size, 15)
         self.assertFalse(dialog.canvas.format.recipient_italic)
         dialog.close()
+
+    def test_position_editor_detects_all_resize_edges(self):
+        preview = PositionCanvas(LabelFormat("test"))
+        rect = preview.geometry_for("recipient")
+        self.assertEqual(preview.resize_edges("recipient", QPointF(rect.left(), rect.center().y())), "l")
+        self.assertEqual(preview.resize_edges("recipient", QPointF(rect.right(), rect.center().y())), "r")
+        self.assertEqual(preview.resize_edges("recipient", QPointF(rect.center().x(), rect.top())), "t")
+        self.assertEqual(preview.resize_edges("recipient", QPointF(rect.center().x(), rect.bottom())), "b")
+        self.assertEqual(preview.resize_edges("recipient", QPointF(rect.left(), rect.top())), "lt")
+        preview.close()
+
+    def test_sender_height_does_not_move_recipient_frame(self):
+        preview = PositionCanvas(LabelFormat("test"))
+        original = preview.geometry_for("recipient")
+        preview.format.sender_height = 30
+        updated = preview.geometry_for("recipient")
+        self.assertEqual(updated.top(), original.top())
+        self.assertEqual(updated.height(), original.height())
+        preview.close()
+
+    def test_envelope_editor_detects_all_resize_edges(self):
+        canvas = EnvelopeCanvas(EnvelopeLayout())
+        rect = canvas.rect_for("recipient")
+        self.assertEqual(canvas.resize_edges("recipient", QPointF(rect.left(), rect.center().y())), "l")
+        self.assertEqual(canvas.resize_edges("recipient", QPointF(rect.right(), rect.center().y())), "r")
+        self.assertEqual(canvas.resize_edges("recipient", QPointF(rect.center().x(), rect.top())), "t")
+        self.assertEqual(canvas.resize_edges("recipient", QPointF(rect.center().x(), rect.bottom())), "b")
+        self.assertEqual(canvas.resize_edges("recipient", QPointF(rect.left(), rect.top())), "lt")
+        canvas.close()
 
     def test_envelope_layout_round_trip(self):
         layout = EnvelopeLayout(
@@ -161,42 +191,27 @@ class FormatTests(unittest.TestCase):
         window = LabelWindow(Path("csv"))
         output = Path(tempfile.mkstemp(suffix=".pdf")[1])
         window.create_pdf = lambda show_guides: (output, RenderStats())
-        options = Mock()
-        options.exec.return_value = QDialog.DialogCode.Accepted
-        options.copies.value.return_value = 1
-        options.page_range.text.return_value = ""
         with patch("label_app.subprocess.run", side_effect=OSError("test")):
-            with patch("label_app.PrintOptionsDialog", return_value=options):
-                with patch("label_app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
-                    with patch("label_app.QMessageBox.warning"):
-                        window.print_pdf()
+            with patch("label_app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                with patch("label_app.QMessageBox.warning"):
+                    window.print_pdf()
         self.assertFalse(output.exists())
         window.close()
 
-    def test_print_options_pass_copies_and_page_range_to_cups(self):
+    def test_print_sends_all_pages_to_cups(self):
         window = LabelWindow(Path("csv"))
         output = Path(tempfile.mkstemp(suffix=".pdf")[1])
         window.create_pdf = lambda show_guides: (output, RenderStats())
-        options = Mock()
-        options.exec.return_value = QDialog.DialogCode.Accepted
-        options.copies.value.return_value = 3
-        options.page_range.text.return_value = "2-4"
         result = Mock(returncode=0)
-        with patch("label_app.PrintOptionsDialog", return_value=options):
-            with patch("label_app.subprocess.run", return_value=result) as run:
-                with patch("label_app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
-                    with patch("label_app.QMessageBox.information"):
-                        window.print_pdf()
+        with patch("label_app.subprocess.run", return_value=result) as run:
+            with patch("label_app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                with patch("label_app.QMessageBox.information"):
+                    window.print_pdf()
         command = run.call_args.args[0]
-        self.assertIn(["-n", "3"], [command[index:index + 2] for index in range(len(command) - 1)])
-        self.assertIn(["-P", "2-4"], [command[index:index + 2] for index in range(len(command) - 1)])
+        self.assertIn(["-n", "1"], [command[index:index + 2] for index in range(len(command) - 1)])
+        self.assertNotIn("-P", command)
         self.assertFalse(output.exists())
         window.close()
-
-    def test_print_options_dialog_page_range_is_enabled(self):
-        dialog = PrintOptionsDialog()
-        self.assertTrue(dialog.page_range.isEnabled())
-        dialog.close()
 
     def test_csv_print_button_does_not_enter_test_page_mode(self):
         window = LabelWindow(Path("csv"))
@@ -225,16 +240,6 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(all("12" in name.casefold() for name in visible_names))
         window.close()
 
-    def test_page_range_parser_accepts_common_ranges(self):
-        self.assertEqual(PrintOptionsDialog.parse_page_range("1"), [1])
-        self.assertEqual(PrintOptionsDialog.parse_page_range("2-4"), [2, 3, 4])
-        self.assertEqual(PrintOptionsDialog.parse_page_range("1, 3, 5"), [1, 3, 5])
-        self.assertEqual(PrintOptionsDialog.parse_page_range("1,2-3,3"), [1, 2, 3])
-
-    def test_page_range_parser_rejects_invalid_ranges(self):
-        self.assertIsNone(PrintOptionsDialog.parse_page_range("0"))
-        self.assertIsNone(PrintOptionsDialog.parse_page_range("4-2"))
-        self.assertIsNone(PrintOptionsDialog.parse_page_range("1,a"))
 
 
 if __name__ == "__main__":

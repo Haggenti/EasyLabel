@@ -14,8 +14,7 @@ launcher.bat
 ```
 
 L'impression Windows utilise l'imprimante par défaut. Le choix de
-l'imprimante, le nombre de copies et la plage de pages restent disponibles
-avec CUPS sous Linux.
+l'imprimante reste disponible avec CUPS sous Linux.
 
 Un autre dossier de CSV peut être fourni en argument :
 
@@ -56,9 +55,15 @@ enveloppe de test avant une impression réelle.
 
 ## Options d'impression
 
-Le bouton **Imprimer** permet de choisir le nombre de copies et une plage de
-pages, par exemple `1`, `2-4` ou `1,3,5`. Une confirmation récapitule
-l'imprimante, le mode, le nombre de copies et les pages avant l'envoi. L'option
+Chaque fichier CSV sélectionné peut avoir son propre nombre d'exemplaires.
+Pour le modifier, faire un clic droit sur le fichier dans la liste puis
+choisir **Nombre d'exemplaires...**. Le nombre par défaut est 1. Le nombre de
+**Exemplaires globaux**, visible au-dessus de la liste, est un multiplicateur
+appliqué à l'ensemble des fichiers sélectionnés.
+
+Le bouton **Imprimer** imprime systématiquement toutes les pages du PDF. Une
+confirmation récapitule l'imprimante, le mode, le nombre global d'exemplaires
+et l'ensemble des pages avant l'envoi. L'option
 **Imprimer une page de test
 avec les contours** imprime uniquement la première page avec les repères de
 calibration.

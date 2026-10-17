@@ -1,0 +1,7 @@
+#EXPEDITEUR;Service Exemple
+#EXPEDITEUR;1 rue de la Demo
+#EXPEDITEUR;0000000000 - exemple@example.invalid
+Destinataire;Adresse;Code postal;Ville
+Destinataire Exemple 1;10 rue du Test;00001;Ville Exemple
+Destinataire Exemple 2;20 avenue des Essais;00002;Commune Exemple
+Destinataire Exemple 3;30 boulevard Fictif;00003;Localite Exemple
