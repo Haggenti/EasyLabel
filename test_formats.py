@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 from format_settings import (FormatSettingsDialog, LabelFormat, PositionCanvas,
                               PositionEditorDialog, load_formats)
 from label_app import (EnvelopeCanvas, EnvelopeFormatDialog, EnvelopeLayout, LabelWindow,
+                       PrintMediaDialog,
                        RenderStats, render_envelope_pdf,
                        format_postal_code, render_pdf)
 from label_printer import load_csv
@@ -292,6 +293,27 @@ class FormatTests(unittest.TestCase):
         self.assertNotIn("-P", command)
         self.assertFalse(output.exists())
         window.close()
+
+    def test_cups_page_size_matches_envelope_format(self):
+        window = LabelWindow(Path("csv"))
+        window.mode.setCurrentIndex(1)
+        window.envelope_page_width = 220
+        window.envelope_page_height = 110
+        self.assertEqual(window.cups_page_size(), "EnvDL")
+        window.envelope_page_width = 229
+        window.envelope_page_height = 162
+        self.assertEqual(window.cups_page_size(), "EnvC5")
+        window.close()
+
+    def test_envelope_print_dialog_defaults_to_multipurpose_source(self):
+        dialog = PrintMediaDialog(
+            [("Enveloppe", "Envelope")],
+            [("Automatique", ""), ("Multipurpose", "Multipurpose"), ("Manual", "Manual")],
+            "Envelope",
+            "Multipurpose",
+        )
+        self.assertEqual(dialog.source.currentData(), "Multipurpose")
+        dialog.close()
 
     def test_csv_print_button_does_not_enter_test_page_mode(self):
         window = LabelWindow(Path("csv"))

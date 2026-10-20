@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFontComboBox,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -849,21 +850,23 @@ class FormatSettingsDialog(QDialog):
         self.update_active_format_marker()
 
         self.name = QLineEdit(current.name)
-        self.page_width = self._number(current.page_width, 1, 1000)
-        self.page_height = self._number(current.page_height, 1, 1000)
+        self.page_width = self._number(current.page_width, 1, 1000, suffix=" mm", step=0.1)
+        self.page_height = self._number(current.page_height, 1, 1000, suffix=" mm", step=0.1)
         self.columns = self._number(current.columns, 1, 50, integer=True)
         self.rows = self._number(current.rows, 1, 50, integer=True)
-        self.margin_left = self._number(current.margin_left, 0, 100)
-        self.margin_top = self._number(current.margin_top, 0, 100)
-        self.gap_x = self._number(current.gap_x, 0, 100)
-        self.gap_y = self._number(current.gap_y, 0, 100)
+        self.margin_left = self._number(current.margin_left, 0, 100, suffix=" mm", step=0.1)
+        self.margin_top = self._number(current.margin_top, 0, 100, suffix=" mm", step=0.1)
+        self.gap_x = self._number(current.gap_x, 0, 100, suffix=" mm", step=0.1)
+        self.gap_y = self._number(current.gap_y, 0, 100, suffix=" mm", step=0.1)
         self.label_width = self._number(
-            current.label_width if current.label_width is not None else self._derived_label_width(current), 0.1, 1000
+            current.label_width if current.label_width is not None else self._derived_label_width(current),
+            0.1, 1000, suffix=" mm", step=0.1
         )
         self.label_height = self._number(
-            current.label_height if current.label_height is not None else self._derived_label_height(current), 0.1, 1000
+            current.label_height if current.label_height is not None else self._derived_label_height(current),
+            0.1, 1000, suffix=" mm", step=0.1
         )
-        self.corner_radius = self._number(current.corner_radius, 0, 1000)
+        self.corner_radius = self._number(current.corner_radius, 0, 1000, suffix=" mm", step=0.1)
         self.margin_right_value = QLabel()
         self.margin_bottom_value = QLabel()
         self.auto_center_horizontal = QCheckBox("Centrage horizontal automatique")
@@ -915,27 +918,34 @@ class FormatSettingsDialog(QDialog):
                 control.valueChanged.connect(self.update_preview)
 
         form = QGridLayout()
-        fields = (
-            ("Nom", self.name), ("Largeur page (mm)", self.page_width),
-            ("Hauteur page (mm)", self.page_height), ("Colonnes", self.columns),
-            ("Lignes", self.rows), ("Marge gauche (mm)", self.margin_left),
-            ("Marge haut (mm)", self.margin_top), ("Espace horizontal (mm)", self.gap_x),
-            ("Espace vertical (mm)", self.gap_y), ("Rayon des coins (mm)", self.corner_radius),
-        )
-        for row, (label, control) in enumerate(fields):
-            form.addWidget(QLabel(label), row, 0)
-            form.addWidget(control, row, 1)
-        margin_info = QVBoxLayout()
-        margin_info.addLayout(self._calculated_margin_row("Marge droite (mm)", self.margin_right_value))
-        margin_info.addLayout(self._calculated_margin_row("Marge basse (mm)", self.margin_bottom_value))
-        label_info = QVBoxLayout()
-        label_info.addLayout(self._calculated_margin_row("Largeur étiquette (mm)", self.label_width))
-        label_info.addLayout(self._calculated_margin_row("Hauteur étiquette (mm)", self.label_height))
-        form.addLayout(label_info, 0, 2, 2, 1, Qt.AlignmentFlag.AlignTop)
-        form.addLayout(margin_info, 5, 2, 2, 1, Qt.AlignmentFlag.AlignTop)
-        form.setColumnStretch(0, 1)
+
+        def add_field(row: int, column: int, label: str, control) -> None:
+            base_column = 0 if column == 0 else 3
+            form.addWidget(QLabel(label), row, base_column)
+            form.addWidget(control, row, base_column + 1)
+
+        form.addWidget(QLabel("Nom"), 0, 0)
+        form.addWidget(self.name, 0, 1, 1, 4)
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        form.addWidget(separator, 1, 2, 7, 1)
+        add_field(1, 0, "Largeur page", self.page_width)
+        add_field(1, 1, "Hauteur page", self.page_height)
+        add_field(2, 0, "Colonnes", self.columns)
+        add_field(2, 1, "Lignes", self.rows)
+        add_field(3, 0, "Largeur étiquette", self.label_width)
+        add_field(3, 1, "Hauteur étiquette", self.label_height)
+        add_field(4, 0, "Marge gauche", self.margin_left)
+        add_field(4, 1, "Marge droite", self.margin_right_value)
+        add_field(5, 0, "Marge haut", self.margin_top)
+        add_field(5, 1, "Marge basse", self.margin_bottom_value)
+        add_field(6, 0, "Espace horizontal", self.gap_x)
+        add_field(6, 1, "Espace vertical", self.gap_y)
+        add_field(7, 0, "Rayon des coins", self.corner_radius)
         form.setColumnStretch(1, 0)
-        form.setColumnStretch(2, 1)
+        form.setColumnStretch(2, 0)
+        form.setColumnStretch(4, 0)
 
         self.save_feedback = QLabel()
         self.save_feedback.setVisible(False)
@@ -991,12 +1001,14 @@ class FormatSettingsDialog(QDialog):
         self.update_preview()
 
     @staticmethod
-    def _number(value: float, minimum: float, maximum: float, integer: bool = False):
+    def _number(value: float, minimum: float, maximum: float, integer: bool = False,
+               suffix: str = "", step: float = 1):
         control = QDoubleSpinBox()
         control.setRange(minimum, maximum)
         control.setValue(value)
         control.setDecimals(0 if integer else 1)
-        control.setSingleStep(1)
+        control.setSingleStep(step)
+        control.setSuffix(suffix)
         return control
 
     @staticmethod
@@ -1165,8 +1177,8 @@ class FormatSettingsDialog(QDialog):
         bottom_space = (current.page_height - current.margin_top
                         - current.rows * current.label_height
                         - (current.rows - 1) * current.gap_y)
-        self.margin_right_value.setText(f"{right_space:.1f}")
-        self.margin_bottom_value.setText(f"{bottom_space:.1f}")
+        self.margin_right_value.setText(f"{right_space:.1f} mm")
+        self.margin_bottom_value.setText(f"{bottom_space:.1f} mm")
         messages = []
         if right_space < 0:
             messages.append(f"Largeur dépassée de {-right_space:.1f} mm")

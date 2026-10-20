@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from label_printer import CsvDocument, find_csv_files, load_csv
+from label_printer import CsvDocument, Recipient, Sender, find_csv_files, load_csv
 from format_settings import FormatSettingsDialog, LabelFormat, load_formats, save_formats
 
 
@@ -66,6 +66,41 @@ class RenderStats:
         self.pages = 0
         self.reduced = 0
         self.overflow = 0
+
+
+class PrintMediaDialog(QDialog):
+    def __init__(self, media_types: list[tuple[str, str]], sources: list[tuple[str, str]],
+                 selected_media: str = "", selected_source: str = "",
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Options d'impression")
+        self.media = QComboBox()
+        for label, value in media_types:
+            self.media.addItem(label, value)
+        selected_index = self.media.findData(selected_media)
+        if selected_index >= 0:
+            self.media.setCurrentIndex(selected_index)
+        self.source = QComboBox()
+        for label, value in sources:
+            self.source.addItem(label, value)
+        selected_index = self.source.findData(selected_source)
+        if selected_index >= 0:
+            self.source.setCurrentIndex(selected_index)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Type de papier"))
+        layout.addWidget(self.media)
+        layout.addWidget(QLabel("Source du papier"))
+        layout.addWidget(self.source)
+        layout.addWidget(buttons)
+
+    def selected_options(self) -> tuple[str, str]:
+        return (str(self.media.currentData() or ""),
+                str(self.source.currentData() or ""))
 
 
 class FileTreeItem(QTreeWidgetItem):
@@ -886,12 +921,13 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
 class EnvelopeEditorDialog(QDialog):
     def __init__(self, layout_data: EnvelopeLayout, sender_text: str = "Expéditeur",
                  recipient_text: str = "Destinataire", parent: QWidget | None = None,
-                 postal_code_text: str = "00000"):
+                 postal_code_text: str = "00000", print_test_callback=None):
         super().__init__(parent)
         self.setWindowTitle("Ajuster l’enveloppe")
         self.resize(820, 440)
         self.setModal(True)
         self.layout_data = layout_data
+        self.print_test_callback = print_test_callback
         if Path(layout_data.background_image).suffix.lower() not in {".jpg", ".jpeg"}:
             self.layout_data.background_image = ""
         self.page_width = self.number(layout_data.page_width, 80, 500)
@@ -1020,9 +1056,12 @@ class EnvelopeEditorDialog(QDialog):
         cancel_button.clicked.connect(self.reject)
         apply_button = QPushButton("Utiliser cette mise en page")
         apply_button.clicked.connect(self.accept)
+        test_button = QPushButton("Imprimer une enveloppe test")
+        test_button.clicked.connect(self.print_test)
         buttons = QHBoxLayout()
         buttons.addWidget(reset_button)
         buttons.addStretch()
+        buttons.addWidget(test_button)
         buttons.addWidget(cancel_button)
         buttons.addWidget(apply_button)
         layout = QVBoxLayout(self)
@@ -1034,6 +1073,11 @@ class EnvelopeEditorDialog(QDialog):
         layout.addWidget(instructions)
         layout.addLayout(buttons)
         self.show_canvas_window()
+
+    def print_test(self) -> None:
+        if self.print_test_callback is not None:
+            self.update_typography()
+            self.print_test_callback(self.layout_data)
 
     def show_canvas_window(self) -> None:
         self.canvas_window.show()
@@ -1184,7 +1228,8 @@ class EnvelopeEditorDialog(QDialog):
 class EnvelopeFormatDialog(QDialog):
     def __init__(self, formats: dict[str, dict], active_name: str,
                  sender_text: str = "Expéditeur", recipient_text: str = "Destinataire",
-                 parent: QWidget | None = None, postal_code_text: str = "00000"):
+                 parent: QWidget | None = None, postal_code_text: str = "00000",
+                 print_test_callback=None):
         super().__init__(parent)
         self.setWindowTitle("Formats d'enveloppes")
         self.resize(560, 420)
@@ -1192,6 +1237,7 @@ class EnvelopeFormatDialog(QDialog):
         self.sender_text = sender_text
         self.recipient_text = recipient_text
         self.postal_code_text = postal_code_text
+        self.print_test_callback = print_test_callback
         self.active_name = active_name
         self.current_layout = EnvelopeLayout()
 
@@ -1256,7 +1302,7 @@ class EnvelopeFormatDialog(QDialog):
         edited_layout = EnvelopeLayout(**asdict(self.current_layout))
         dialog = EnvelopeEditorDialog(
             edited_layout, self.sender_text, self.recipient_text, self,
-            self.postal_code_text
+            self.postal_code_text, self.print_test_callback
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.current_layout = dialog.layout_data
@@ -1967,7 +2013,7 @@ class LabelWindow(QMainWindow):
         dialog = EnvelopeFormatDialog(
             self.envelope_presets, self.envelope_preset_name,
             self._sample_sender(), self._sample_recipient(), self,
-            self._sample_postal_code()
+            self._sample_postal_code(), self.print_test_envelope
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -2060,7 +2106,7 @@ class LabelWindow(QMainWindow):
         self.envelope_height.setMaximum(300)
         dialog = EnvelopeEditorDialog(
             self.envelope_layout(), self._sample_sender(), self._sample_recipient(), self,
-            self._sample_postal_code()
+            self._sample_postal_code(), self.print_test_envelope
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -2385,6 +2431,176 @@ class LabelWindow(QMainWindow):
             if pdf_path is not None:
                 pdf_path.unlink(missing_ok=True)
 
+    def available_print_media(self, printer_name: str) -> list[tuple[str, str]]:
+        media_types, _, _, _ = self.available_print_options(printer_name)
+        return media_types
+
+    def available_print_options(self, printer_name: str) -> tuple[
+            list[tuple[str, str]], list[tuple[str, str]], str, str]:
+        command = ["lpoptions"]
+        if printer_name:
+            command.extend(["-p", printer_name])
+        command.append("-l")
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    check=False, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return [], [], "MediaType", "InputSlot"
+        if result.returncode or not isinstance(result.stdout, str):
+            return [], [], "MediaType", "InputSlot"
+        media_types = [("Automatique", ""), ("Étiquettes (Labels)", "Labels")]
+        sources = [("Automatique", "")]
+        media_option = "MediaType"
+        source_option = "InputSlot"
+        for line in result.stdout.splitlines():
+            option, separator, values = line.partition(":")
+            option_name_raw = option.split("/", 1)[0].strip()
+            option_name = option_name_raw.casefold()
+            if not separator:
+                continue
+            if option_name in ("mediatype", "media-type", "media type"):
+                media_types = [("Automatique", "")]
+                media_option = option_name_raw
+                target = media_types
+            elif option_name in ("inputslot", "media-source", "mediasource", "media source"):
+                sources = [("Automatique", "")]
+                source_option = option_name_raw
+                target = sources
+            else:
+                continue
+            for value in values.split():
+                is_default = value.startswith("*")
+                value = value.lstrip("*")
+                if value:
+                    target.append((value + (" (par défaut)" if is_default else ""), value))
+        return media_types, sources, media_option, source_option
+
+    def choose_print_media(self, printer_name: str, envelope: bool = False) -> tuple[str, str, str, str] | None:
+        media_types, sources, media_option, source_option = self.available_print_options(printer_name)
+        if not media_types and not sources:
+            return ("Envelope", "", media_option, source_option) if envelope else (
+                "", "", media_option, source_option
+            )
+        desired_media = "Envelope" if envelope else "Labels"
+        if not any(value.casefold() == desired_media.casefold() for _, value in media_types):
+            media_types.append(("Enveloppe (Envelope)" if envelope else "Étiquettes (Labels)", desired_media))
+        desired_source = ""
+        if envelope:
+            desired_source = next(
+                (value for _, value in sources if value.casefold() == "multipurpose"),
+                "",
+            )
+        dialog = PrintMediaDialog(media_types, sources, desired_media, desired_source, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        media_type, media_source = dialog.selected_options()
+        return media_type, media_source, media_option, source_option
+
+    def cups_page_size(self, envelope_size: tuple[float, float] | None = None) -> str | None:
+        if self.mode.currentIndex() == 0:
+            if (abs(self.page_width - 210) < 0.1
+                    and abs(self.page_height - 297) < 0.1):
+                return "A4"
+            return None
+        envelope_sizes = {
+            (220, 110): "EnvDL",
+            (229, 162): "EnvC5",
+            (225, 110): "Env10",
+            (176, 125): "EnvISOB5",
+            (190, 98): "EnvMonarch",
+        }
+        selected_width, selected_height = envelope_size or (
+            self.envelope_page_width, self.envelope_page_height
+        )
+        for (width, height), page_size in envelope_sizes.items():
+            if (abs(selected_width - width) < 0.1
+                    and abs(selected_height - height) < 0.1):
+                return page_size
+        return None
+
+    def print_test_envelope(self, layout_data: EnvelopeLayout) -> None:
+        output = None
+        try:
+            sender = Sender(("Expéditeur",))
+            recipient = Recipient("Destinataire Test", "1 rue de l'Impression", "00000", "Ville")
+            document = CsvDocument(Path("enveloppe-test"), sender, (recipient,))
+            file_descriptor, output_name = tempfile.mkstemp(
+                prefix="enveloppe-test-", suffix=".pdf"
+            )
+            os.close(file_descriptor)
+            output = Path(output_name)
+            stats = render_envelope_pdf(
+                [document], output, (layout_data.page_width, layout_data.page_height),
+                layout_data.recipient_x, layout_data.recipient_y,
+                layout_data.recipient_width, layout_data.recipient_height,
+                sender_x=layout_data.sender_x, sender_y=layout_data.sender_y,
+                sender_width=layout_data.sender_width,
+                sender_height=layout_data.sender_height,
+                sender_enabled=layout_data.sender_enabled,
+                sender_font_family=layout_data.sender_font_family,
+                sender_font_size=layout_data.sender_font_size,
+                sender_bold=layout_data.sender_bold,
+                sender_italic=layout_data.sender_italic,
+                recipient_font_family=layout_data.recipient_font_family,
+                recipient_font_size=layout_data.recipient_font_size,
+                recipient_bold=layout_data.recipient_bold,
+                recipient_italic=layout_data.recipient_italic,
+                sender_alignment=layout_data.sender_alignment,
+                recipient_alignment=layout_data.recipient_alignment,
+                sender_vertical_alignment=layout_data.sender_vertical_alignment,
+                recipient_vertical_alignment=layout_data.recipient_vertical_alignment,
+                postal_code_enabled=layout_data.postal_code_enabled,
+                postal_code_x=layout_data.postal_code_x,
+                postal_code_y=layout_data.postal_code_y,
+                postal_code_width=layout_data.postal_code_width,
+                postal_code_height=layout_data.postal_code_height,
+                postal_code_offset_x=layout_data.postal_code_offset_x,
+                postal_code_offset_y=layout_data.postal_code_offset_y,
+            )
+            printer_name = self.printers.currentData()
+            print_options = self.choose_print_media(printer_name, envelope=True)
+            if print_options is None:
+                return
+            media_type, media_source, media_option, source_option = print_options
+            confirmation = (
+                f"Imprimante : {self.printers.currentText()}\n"
+                f"Format : {layout_data.page_width:g} x {layout_data.page_height:g} mm\n"
+                f"Source papier : {media_source or 'Automatique'}\n\n"
+                "Lancer l'impression de l'enveloppe test ?"
+            )
+            if QMessageBox.question(
+                self, "Confirmer l'impression", confirmation,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            if os.name == "nt":
+                os.startfile(str(output), "print")
+            else:
+                command = ["lp"]
+                if printer_name:
+                    command.extend(["-d", printer_name])
+                page_size = self.cups_page_size((layout_data.page_width, layout_data.page_height))
+                if page_size:
+                    command.extend(["-o", f"media={page_size}"])
+                command.extend(["-o", "print-scaling=none"])
+                if media_type:
+                    command.extend(["-o", f"{media_option}={media_type}"])
+                if media_source:
+                    command.extend(["-o", f"{source_option}={media_source}"])
+                command.extend(["-n", "1", str(output)])
+                result = subprocess.run(
+                    command, capture_output=True, text=True, check=False, timeout=30
+                )
+                if result.returncode:
+                    raise RuntimeError(result.stderr.strip() or "CUPS a refusé le document")
+            QMessageBox.information(self, "Impression envoyée", "L'enveloppe test a été envoyée.")
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            QMessageBox.warning(self, "Impression impossible", str(error))
+        finally:
+            if output is not None:
+                output.unlink(missing_ok=True)
+
 
     def print_pdf(self, test_page_override: bool | None = None) -> None:
         pdf_path = None
@@ -2392,6 +2608,15 @@ class LabelWindow(QMainWindow):
             test_page = bool(test_page_override)
             self._test_page_requested = test_page
             pdf_path, stats = self.create_pdf(show_guides=test_page)
+            media_type = media_source = media_option = source_option = ""
+            if os.name != "nt":
+                printer_name = self.printers.currentData()
+                print_options = self.choose_print_media(
+                    printer_name, envelope=self.mode.currentIndex() == 1
+                )
+                if print_options is None:
+                    return
+                media_type, media_source, media_option, source_option = print_options
             printer_summary = self.printers.currentText()
             mode_summary = "enveloppes" if self.mode.currentIndex() == 1 else "étiquettes"
             confirmation = (
@@ -2399,7 +2624,8 @@ class LabelWindow(QMainWindow):
                 f"Mode : {mode_summary}\n"
                 f"Exemplaires globaux : {self.global_copies.value()}\n"
                 f"Étiquettes à imprimer : {stats.labels}\n"
-                f"Pages nécessaires : {stats.pages}\n\n"
+                f"Pages nécessaires : {stats.pages}\n"
+                f"Source papier : {media_source or 'Automatique'}\n\n"
                 "Lancer l'impression ?"
             )
             if QMessageBox.question(
@@ -2411,15 +2637,17 @@ class LabelWindow(QMainWindow):
             if os.name == "nt":
                 os.startfile(str(pdf_path), "print")
             else:
-                printer_name = self.printers.currentData()
                 command = ["lp"]
                 if printer_name:
                     command.extend(["-d", printer_name])
-                if (self.mode.currentIndex() == 0
-                        and abs(self.page_width - 210) < 0.1
-                        and abs(self.page_height - 297) < 0.1):
-                    command.extend(["-o", "media=A4"])
+                page_size = self.cups_page_size()
+                if page_size:
+                    command.extend(["-o", f"media={page_size}"])
                 command.extend(["-o", "print-scaling=none"])
+                if media_type:
+                    command.extend(["-o", f"{media_option}={media_type}"])
+                if media_source:
+                    command.extend(["-o", f"{source_option}={media_source}"])
                 command.extend(["-n", "1"])
                 command.append(str(pdf_path))
                 result = subprocess.run(
@@ -2575,6 +2803,14 @@ class PdfPreviewDialog(QDialog):
 
 def main() -> int:
     directory = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "csv"
+    logging_rules = os.environ.get("QT_LOGGING_RULES", "")
+    if logging_rules:
+        logging_rules += ";"
+    os.environ["QT_LOGGING_RULES"] = logging_rules + (
+        "kf.notifications.warning=false;"
+        "qt.qpa.wayland.warning=false;"
+        "qt.qpa.xcb.warning=false"
+    )
     application = QApplication(sys.argv)
     window = LabelWindow(directory)
     window.show()
