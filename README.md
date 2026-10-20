@@ -58,8 +58,9 @@ enveloppe de test avant une impression réelle.
 Chaque fichier CSV sélectionné peut avoir son propre nombre d'exemplaires.
 Pour le modifier, faire un clic droit sur le fichier dans la liste puis
 choisir **Nombre d'exemplaires...**. Le nombre par défaut est 1. Le nombre de
-**Exemplaires globaux**, visible au-dessus de la liste, est un multiplicateur
-appliqué à l'ensemble des fichiers sélectionnés.
+**Exemplaires globaux**, affiché en bas de la fenêtre, est un multiplicateur
+appliqué à l'ensemble des fichiers sélectionnés. La liste affiche séparément
+le nombre d'étiquettes et le nombre d'exemplaires de chaque fichier.
 
 Le bouton **Imprimer** imprime systématiquement toutes les pages du PDF. Une
 confirmation récapitule l'imprimante, le mode, le nombre global d'exemplaires

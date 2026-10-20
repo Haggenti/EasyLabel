@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QPoint, QPointF, QSettings, QRectF, QSize, QSizeF, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QCursor, QDesktopServices, QFont, QFontMetricsF, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QPixmap, QTransform
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QDesktopServices, QFont, QFontMetricsF, QIcon, QImage, QImageReader, QMouseEvent, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QPixmap, QPolygonF, QTransform
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
@@ -38,11 +38,14 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QInputDialog,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QTreeWidget,
+    QTreeWidgetItem,
     QWidget,
 )
 
@@ -65,17 +68,56 @@ class RenderStats:
         self.overflow = 0
 
 
-class FileListWidget(QListWidget):
+class FileTreeItem(QTreeWidgetItem):
+    def text(self, column: int = 0) -> str:
+        return super().text(column)
+
+
+class FileListWidget(QTreeWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setHeaderLabels(("Fichier", "Étiquettes", "Exemplaires"))
+        self.setRootIsDecorated(False)
+        self.setAlternatingRowColors(True)
+        header = self.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+
+    def addItem(self, item: QTreeWidgetItem) -> None:
+        self.addTopLevelItem(item)
+
+    def item(self, index: int) -> QTreeWidgetItem | None:
+        return self.topLevelItem(index)
+
+    def count(self) -> int:
+        return self.topLevelItemCount()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         item = self.itemAt(event.position().toPoint())
         if item is not None and event.button() == Qt.MouseButton.LeftButton:
             item_rect = self.visualItemRect(item)
             if event.position().x() > item_rect.left() + 28:
                 state = (Qt.CheckState.Unchecked
-                         if item.checkState() == Qt.CheckState.Checked
+                         if item.checkState(0) == Qt.CheckState.Checked
                          else Qt.CheckState.Checked)
-                item.setCheckState(state)
+                item.setCheckState(0, state)
         super().mousePressEvent(event)
+
+    @staticmethod
+    def warning_icon() -> QIcon:
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#5c4300"), 1))
+        painter.setBrush(QColor("#ffd23f"))
+        painter.drawPolygon(QPolygonF((QPointF(8, 1), QPointF(15, 14), QPointF(1, 14))))
+        painter.setPen(QPen(QColor("#5c4300"), 2))
+        painter.drawLine(QPointF(8, 5), QPointF(8, 10))
+        painter.drawPoint(QPointF(8, 12))
+        painter.end()
+        return QIcon(pixmap)
 
 
 @dataclass
@@ -1376,6 +1418,8 @@ class LabelWindow(QMainWindow):
         choose_directory_action.triggered.connect(self.choose_directory)
         self.directory_action = file_menu.addAction(str(self.directory))
         self.directory_action.setEnabled(False)
+        refresh_files_action = file_menu.addAction("Actualiser les fichiers CSV")
+        refresh_files_action.triggered.connect(self.refresh_files)
         file_menu.addSeparator()
         export_formats_action = file_menu.addAction("Exporter les formats...")
         export_formats_action.triggered.connect(self.export_formats)
@@ -1598,6 +1642,29 @@ class LabelWindow(QMainWindow):
             self.add_file(path)
         self.update_summary()
 
+    def refresh_files(self) -> None:
+        saved_state = {}
+        for index in range(self.file_list.count()):
+            item = self.file_list.item(index)
+            if item is not None:
+                saved_state[item.data(0, Qt.ItemDataRole.UserRole)] = (
+                    item.checkState(0), int(item.data(0, self.COPIES_ROLE) or 1)
+                )
+        self.files.clear()
+        self.file_list.clear()
+        for path in find_csv_files(self.directory):
+            self.add_file(path)
+            item = self.file_list.item(self.file_list.count() - 1)
+            if item is None:
+                continue
+            previous = saved_state.get(str(path))
+            if previous is not None:
+                state, copies = previous
+                item.setData(0, self.COPIES_ROLE, copies)
+                item.setText(2, str(copies))
+                item.setCheckState(0, state)
+            self.filter_files(self.file_filter.text())
+
     def choose_directory(self) -> None:
         selected = QFileDialog.getExistingDirectory(
             self, "Choisir le dossier des fichiers CSV", str(self.directory)
@@ -1625,18 +1692,18 @@ class LabelWindow(QMainWindow):
         document = None
         try:
             document = load_csv(path)
-            warning = " [!]" if document.issues else ""
-            label = f"{path.name} ({len(document.recipients)} étiquettes){warning}"
+            label = path.name
         except ValueError as error:
             label = f"{path.name} (erreur : {error})"
-        item = QListWidgetItem(label)
-        item.setData(Qt.ItemDataRole.UserRole, str(path))
-        item.setData(self.COPIES_ROLE, 1)
-        item.setData(self.BASE_LABEL_ROLE, label)
-        item.setText(f"{label}  x1")
+        item = FileTreeItem((label, str(len(document.recipients) if document else 0), "1"))
+        item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+        item.setData(0, self.COPIES_ROLE, 1)
+        item.setData(0, self.BASE_LABEL_ROLE, label)
         if document is not None and document.issues:
-            item.setToolTip("\n".join(document.issues))
-        item.setCheckState(Qt.CheckState.Unchecked)
+            item.setIcon(0, self.file_list.warning_icon())
+            item.setToolTip(0, "\n".join(document.issues))
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(0, Qt.CheckState.Unchecked)
         self.file_list.addItem(item)
         self.files[str(path)] = path
 
@@ -1644,7 +1711,7 @@ class LabelWindow(QMainWindow):
         query = text.strip().casefold()
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
-            file_name = Path(item.data(Qt.ItemDataRole.UserRole)).name.casefold()
+            file_name = Path(item.data(0, Qt.ItemDataRole.UserRole)).name.casefold()
             item.setHidden(bool(query) and query not in file_name)
         self.update_summary()
 
@@ -1652,7 +1719,7 @@ class LabelWindow(QMainWindow):
         item = self.file_list.itemAt(position)
         if item is None:
             return
-        path = Path(item.data(Qt.ItemDataRole.UserRole))
+        path = Path(item.data(0, Qt.ItemDataRole.UserRole))
         menu = QMenu(self.file_list)
         open_action = menu.addAction("Ouvrir le fichier")
         open_action.triggered.connect(
@@ -1663,17 +1730,16 @@ class LabelWindow(QMainWindow):
         menu.exec(self.file_list.mapToGlobal(position))
 
     def set_file_copies(self, item: QListWidgetItem) -> None:
-        path = Path(item.data(Qt.ItemDataRole.UserRole))
-        current = int(item.data(self.COPIES_ROLE) or 1)
+        path = Path(item.data(0, Qt.ItemDataRole.UserRole))
+        current = int(item.data(0, self.COPIES_ROLE) or 1)
         copies, accepted = QInputDialog.getInt(
             self, "Nombre d'exemplaires",
             f"Exemplaires pour {path.name} :", current, 1, 99, 1,
         )
         if not accepted:
             return
-        item.setData(self.COPIES_ROLE, copies)
-        base_label = item.data(self.BASE_LABEL_ROLE) or item.text()
-        item.setText(f"{base_label}  x{copies}")
+        item.setData(0, self.COPIES_ROLE, copies)
+        item.setText(2, str(copies))
         self.update_summary()
 
     def choose_files(self) -> None:
@@ -1711,11 +1777,11 @@ class LabelWindow(QMainWindow):
         documents = []
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
-            if item.checkState() == Qt.CheckState.Checked:
-                path = Path(item.data(Qt.ItemDataRole.UserRole))
+            if item.checkState(0) == Qt.CheckState.Checked:
+                path = Path(item.data(0, Qt.ItemDataRole.UserRole))
                 try:
                     document = load_csv(path)
-                    documents.extend([document] * int(item.data(self.COPIES_ROLE) or 1))
+                    documents.extend([document] * int(item.data(0, self.COPIES_ROLE) or 1))
                 except (OSError, UnicodeError, ValueError, csv.Error) as error:
                     raise ValueError(f"Impossible de lire {path.name} : {error}") from error
         return documents * self.global_copies.value()
@@ -1728,13 +1794,13 @@ class LabelWindow(QMainWindow):
             item = self.file_list.item(index)
             if not item.isHidden():
                 active_count += 1
-                if item.checkState() == Qt.CheckState.Checked:
+                if item.checkState(0) == Qt.CheckState.Checked:
                     active_selected_count += 1
-            if item.checkState() != Qt.CheckState.Checked:
+            if item.checkState(0) != Qt.CheckState.Checked:
                 continue
             try:
-                document = load_csv(Path(item.data(Qt.ItemDataRole.UserRole)))
-                documents.extend([document] * int(item.data(self.COPIES_ROLE) or 1))
+                document = load_csv(Path(item.data(0, Qt.ItemDataRole.UserRole)))
+                documents.extend([document] * int(item.data(0, self.COPIES_ROLE) or 1))
             except (OSError, UnicodeError, ValueError, csv.Error):
                 continue
         documents *= self.global_copies.value()
@@ -1770,7 +1836,7 @@ class LabelWindow(QMainWindow):
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
             if not item.isHidden():
-                item.setCheckState(state)
+                item.setCheckState(0, state)
         self.update_summary()
 
     def select_all_changed(self, state: int) -> None:
