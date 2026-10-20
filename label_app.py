@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
     QScrollArea,
+    QTextBrowser,
     QVBoxLayout,
     QHBoxLayout,
     QComboBox,
@@ -60,6 +61,22 @@ def mm(value: float) -> float:
     return value * POINTS_PER_MM
 
 
+def application_icon() -> QIcon:
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    envelope = QRectF(7, 15, 50, 34)
+    painter.setPen(QPen(QColor("#234e70"), 3))
+    painter.setBrush(QColor("#f4f7f9"))
+    painter.drawRoundedRect(envelope, 4, 4)
+    painter.setPen(QPen(QColor("#2d7199"), 3))
+    painter.drawLine(QPointF(9, 18), QPointF(32, 36))
+    painter.drawLine(QPointF(32, 36), QPointF(55, 18))
+    painter.end()
+    return QIcon(pixmap)
+
+
 class RenderStats:
     def __init__(self) -> None:
         self.labels = 0
@@ -71,35 +88,73 @@ class RenderStats:
 class PrintMediaDialog(QDialog):
     def __init__(self, media_types: list[tuple[str, str]], sources: list[tuple[str, str]],
                  selected_media: str = "", selected_source: str = "",
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None,
+                 printers: list[tuple[str, str]] | None = None,
+                 selected_printer: str = "",
+                 printer_options: dict[str, tuple[list[tuple[str, str]], list[tuple[str, str]], str, str]] | None = None):
         super().__init__(parent)
         self.setWindowTitle("Options d'impression")
+        self.printer_options = printer_options or {}
+        self.printer = QComboBox()
+        for label, value in printers or []:
+            self.printer.addItem(label, value)
+        selected_index = self.printer.findData(selected_printer)
+        if selected_index >= 0:
+            self.printer.setCurrentIndex(selected_index)
         self.media = QComboBox()
-        for label, value in media_types:
-            self.media.addItem(label, value)
-        selected_index = self.media.findData(selected_media)
-        if selected_index >= 0:
-            self.media.setCurrentIndex(selected_index)
         self.source = QComboBox()
-        for label, value in sources:
-            self.source.addItem(label, value)
-        selected_index = self.source.findData(selected_source)
-        if selected_index >= 0:
-            self.source.setCurrentIndex(selected_index)
+        self._fill_options(media_types, sources, selected_media, selected_source)
+        self.printer.currentIndexChanged.connect(self._printer_changed)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
+        if self.printer.count():
+            layout.addWidget(QLabel("Imprimante"))
+            layout.addWidget(self.printer)
         layout.addWidget(QLabel("Type de papier"))
         layout.addWidget(self.media)
         layout.addWidget(QLabel("Source du papier"))
         layout.addWidget(self.source)
         layout.addWidget(buttons)
 
-    def selected_options(self) -> tuple[str, str]:
-        return (str(self.media.currentData() or ""),
+    def _fill_options(self, media_types: list[tuple[str, str]],
+                      sources: list[tuple[str, str]], selected_media: str,
+                      selected_source: str) -> None:
+        self.media.blockSignals(True)
+        self.source.blockSignals(True)
+        self.media.clear()
+        self.source.clear()
+        for label, value in media_types:
+            self.media.addItem(label, value)
+        for label, value in sources:
+            self.source.addItem(label, value)
+        media_index = self.media.findData(selected_media)
+        source_index = self.source.findData(selected_source)
+        if media_index >= 0:
+            self.media.setCurrentIndex(media_index)
+        if source_index >= 0:
+            self.source.setCurrentIndex(source_index)
+        self.media.blockSignals(False)
+        self.source.blockSignals(False)
+
+    def _printer_changed(self, index: int) -> None:
+        del index
+        printer_name = str(self.printer.currentData() or "")
+        options = self.printer_options.get(printer_name)
+        if options is None:
+            return
+        media_types, sources, _, _ = options
+        selected_source = next(
+            (value for _, value in sources if value.casefold() == "multipurpose"), ""
+        )
+        self._fill_options(media_types, sources, "", selected_source)
+
+    def selected_options(self) -> tuple[str, str, str]:
+        return (str(self.printer.currentData() or ""),
+                str(self.media.currentData() or ""),
                 str(self.source.currentData() or ""))
 
 
@@ -1335,6 +1390,7 @@ class LabelWindow(QMainWindow):
     def __init__(self, directory: Path):
         super().__init__()
         self.setWindowTitle("Impression d'étiquettes et d'enveloppes")
+        self.setWindowIcon(application_icon())
         self.resize(860, 620)
         self.settings = QSettings("Tik", "ImpressionEtiquettes")
         saved_directory = self.settings.value("csv_directory", "")
@@ -1488,20 +1544,11 @@ class LabelWindow(QMainWindow):
         self.format_manager_action = self.menuBar().addAction("Gérer les formats")
         self.format_manager_action.triggered.connect(self.open_format_manager)
 
-        printer_menu = self.menuBar().addMenu("Imprimante")
-        self.printer_actions = []
-        printer_group = QActionGroup(self)
-        for index in range(self.printers.count()):
-            action = printer_menu.addAction(self.printers.itemText(index))
-            action.setCheckable(True)
-            action.triggered.connect(lambda checked=False, selected=index: self.printers.setCurrentIndex(selected))
-            printer_group.addAction(action)
-            self.printer_actions.append(action)
-        self.printers.currentIndexChanged.connect(self.update_printer_menu)
-
         about_menu = self.menuBar().addMenu("À propos")
         about_action = about_menu.addAction("À propos de l'application")
         about_action.triggered.connect(self.show_about)
+        manual_action = about_menu.addAction("Manuel")
+        manual_action.triggered.connect(self.show_manual)
 
         printer_settings = QHBoxLayout()
         buttons = QHBoxLayout()
@@ -1541,7 +1588,6 @@ class LabelWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
         self.update_mode_controls()
-        self.update_printer_menu()
         self.update_start_ranges()
         last_format = self.settings.value("last_format", "")
         if last_format:
@@ -1584,6 +1630,30 @@ class LabelWindow(QMainWindow):
         footer.addWidget(buttons)
         content.addLayout(footer)
 
+        dialog.exec()
+
+    def show_manual(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Manuel de Tik")
+        dialog.resize(820, 680)
+
+        browser = QTextBrowser(dialog)
+        browser.setOpenExternalLinks(True)
+        manual_path = Path(__file__).resolve().parent / "MANUEL.md"
+        try:
+            browser.setMarkdown(manual_path.read_text(encoding="utf-8"))
+        except OSError:
+            browser.setPlainText(
+                "Le manuel est indisponible.\n\n"
+                f"Fichier attendu : {manual_path}"
+            )
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(browser)
+        layout.addWidget(buttons)
         dialog.exec()
 
     def export_formats(self) -> None:
@@ -1813,12 +1883,6 @@ class LabelWindow(QMainWindow):
         if not self.printers.count():
             self.printers.addItem("Imprimante par défaut", "")
 
-    def update_printer_menu(self) -> None:
-        if not hasattr(self, "printer_actions"):
-            return
-        for index, action in enumerate(self.printer_actions):
-            action.setChecked(index == self.printers.currentIndex())
-
     def selected_documents(self) -> list[CsvDocument]:
         documents = []
         for index in range(self.file_list.count()):
@@ -1872,7 +1936,10 @@ class LabelWindow(QMainWindow):
             capacity = self.columns.value() * self.rows.value()
             first_capacity = capacity - ((self.start_row.value() - 1) * self.columns.value() + self.start_column.value() - 1)
             page_count = 0 if not label_count else 1 + max(0, math.ceil((label_count - first_capacity) / capacity))
-        message = f"{file_count} fichier(s), {label_count} étiquette(s), {page_count} page(s)"
+        if self.mode.currentIndex() == 1:
+            message = f"{file_count} fichier(s), {label_count} enveloppe(s)"
+        else:
+            message = f"{file_count} fichier(s), {label_count} étiquette(s), {page_count} page(s)"
         if issue_count:
             message += f" - [!] {issue_count} avertissement(s)"
         self.summary.setText(message)
@@ -2475,11 +2542,11 @@ class LabelWindow(QMainWindow):
                     target.append((value + (" (par défaut)" if is_default else ""), value))
         return media_types, sources, media_option, source_option
 
-    def choose_print_media(self, printer_name: str, envelope: bool = False) -> tuple[str, str, str, str] | None:
+    def choose_print_media(self, printer_name: str, envelope: bool = False) -> tuple[str, str, str, str, str] | None:
         media_types, sources, media_option, source_option = self.available_print_options(printer_name)
         if not media_types and not sources:
-            return ("Envelope", "", media_option, source_option) if envelope else (
-                "", "", media_option, source_option
+            return (printer_name, "Envelope", "", media_option, source_option) if envelope else (
+                printer_name, "", "", media_option, source_option
             )
         desired_media = "Envelope" if envelope else "Labels"
         if not any(value.casefold() == desired_media.casefold() for _, value in media_types):
@@ -2490,11 +2557,33 @@ class LabelWindow(QMainWindow):
                 (value for _, value in sources if value.casefold() == "multipurpose"),
                 "",
             )
-        dialog = PrintMediaDialog(media_types, sources, desired_media, desired_source, self)
+        printers = [
+            (self.printers.itemText(index), str(self.printers.itemData(index) or ""))
+            for index in range(self.printers.count())
+        ]
+        printer_options = {}
+        for _, printer in printers:
+            options = self.available_print_options(printer)
+            option_media, option_sources, option_media_name, option_source_name = options
+            if not any(value.casefold() == desired_media.casefold() for _, value in option_media):
+                option_media.append((
+                    "Enveloppe (Envelope)" if envelope else "Étiquettes (Labels)",
+                    desired_media,
+                ))
+            printer_options[printer] = (
+                option_media, option_sources, option_media_name, option_source_name
+            )
+        dialog = PrintMediaDialog(
+            media_types, sources, desired_media, desired_source, self,
+            printers, printer_name, printer_options,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
-        media_type, media_source = dialog.selected_options()
-        return media_type, media_source, media_option, source_option
+        selected_printer, media_type, media_source = dialog.selected_options()
+        selected_options = printer_options.get(selected_printer)
+        if selected_options is not None:
+            _, _, media_option, source_option = selected_options
+        return selected_printer, media_type, media_source, media_option, source_option
 
     def cups_page_size(self, envelope_size: tuple[float, float] | None = None) -> str | None:
         if self.mode.currentIndex() == 0:
@@ -2561,7 +2650,10 @@ class LabelWindow(QMainWindow):
             print_options = self.choose_print_media(printer_name, envelope=True)
             if print_options is None:
                 return
-            media_type, media_source, media_option, source_option = print_options
+            printer_name, media_type, media_source, media_option, source_option = print_options
+            selected_index = self.printers.findData(printer_name)
+            if selected_index >= 0:
+                self.printers.setCurrentIndex(selected_index)
             confirmation = (
                 f"Imprimante : {self.printers.currentText()}\n"
                 f"Format : {layout_data.page_width:g} x {layout_data.page_height:g} mm\n"
@@ -2616,14 +2708,17 @@ class LabelWindow(QMainWindow):
                 )
                 if print_options is None:
                     return
-                media_type, media_source, media_option, source_option = print_options
+                printer_name, media_type, media_source, media_option, source_option = print_options
+                selected_index = self.printers.findData(printer_name)
+                if selected_index >= 0:
+                    self.printers.setCurrentIndex(selected_index)
             printer_summary = self.printers.currentText()
             mode_summary = "enveloppes" if self.mode.currentIndex() == 1 else "étiquettes"
             confirmation = (
                 f"Imprimante : {printer_summary}\n"
                 f"Mode : {mode_summary}\n"
                 f"Exemplaires globaux : {self.global_copies.value()}\n"
-                f"Étiquettes à imprimer : {stats.labels}\n"
+                f"{'Enveloppes' if self.mode.currentIndex() == 1 else 'Étiquettes'} à imprimer : {stats.labels}\n"
                 f"Pages nécessaires : {stats.pages}\n"
                 f"Source papier : {media_source or 'Automatique'}\n\n"
                 "Lancer l'impression ?"
@@ -2812,6 +2907,7 @@ def main() -> int:
         "qt.qpa.xcb.warning=false"
     )
     application = QApplication(sys.argv)
+    application.setWindowIcon(application_icon())
     window = LabelWindow(directory)
     window.show()
     return application.exec()
