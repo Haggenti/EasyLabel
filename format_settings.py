@@ -462,31 +462,49 @@ class PositionCanvas(QWidget):
             family = getattr(self.format, f"{element}_font_family")
             size = getattr(self.format, f"{element}_font_size")
             minimum_size = 4
-            fitted_size = max(minimum_size, round(size * self.zoom))
-            font = QFont(family, fitted_size)
-            font.setBold(getattr(self.format, f"{element}_bold"))
-            font.setItalic(getattr(self.format, f"{element}_italic"))
-            painter.setFont(font)
             sample = self.sender_text if element == "sender" else self.recipient_text
-            for fitted_size in range(font.pointSize(), minimum_size - 1, -1):
-                font.setPointSize(fitted_size)
-                bounds = QFontMetricsF(font).boundingRect(
-                    rect.adjusted(3, 3, -3, -3),
-                    int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap), sample
-                )
-                if bounds.width() <= rect.width() - 6 and bounds.height() <= rect.height() - 6:
-                    break
-            painter.setFont(font)
-            painter.drawText(
-                rect.adjusted(3, 3, -3, -3),
-                alignment_flag(
-                    getattr(self.format, f"{element}_alignment"),
-                    vertical_alignment_flag(
-                        getattr(self.format, f"{element}_vertical_alignment")
-                    ),
-                ) | Qt.TextFlag.TextWordWrap,
-                sample,
+            lines = sample.splitlines() or [""]
+            fonts = []
+            for line in lines:
+                font = QFont(family)
+                font.setPointSizeF(size * self.zoom)
+                font.setBold(getattr(self.format, f"{element}_bold"))
+                font.setItalic(getattr(self.format, f"{element}_italic"))
+                minimum_font = QFont(font)
+                minimum_font.setPointSizeF(minimum_size * self.zoom)
+                if QFontMetricsF(font, painter.device()).tightBoundingRect(line).width() > rect.width() - 6:
+                    lower = minimum_size * self.zoom
+                    upper = size * self.zoom
+                    for _ in range(20):
+                        middle = (lower + upper) / 2
+                        font.setPointSizeF(middle)
+                        if QFontMetricsF(font, painter.device()).tightBoundingRect(line).width() <= rect.width() - 6:
+                            lower = middle
+                        else:
+                            upper = middle
+                    font.setPointSizeF(lower)
+                    if QFontMetricsF(font, painter.device()).tightBoundingRect(line).width() > rect.width() - 6:
+                        font = minimum_font
+                fonts.append(font)
+            metrics = [QFontMetricsF(font, painter.device()) for font in fonts]
+            total_height = sum(metric.height() for metric in metrics)
+            vertical = vertical_alignment_flag(
+                getattr(self.format, f"{element}_vertical_alignment")
             )
+            if vertical == Qt.AlignmentFlag.AlignTop:
+                top = rect.top() + 3
+            elif vertical == Qt.AlignmentFlag.AlignBottom:
+                top = rect.bottom() - 3 - total_height
+            else:
+                top = rect.top() + (rect.height() - total_height) / 2
+            horizontal = alignment_flag(
+                getattr(self.format, f"{element}_alignment"), Qt.AlignmentFlag.AlignVCenter
+            )
+            for line, font, metric in zip(lines, fonts, metrics):
+                line_rect = QRectF(rect.left() + 3, top, rect.width() - 6, metric.height())
+                painter.setFont(font)
+                painter.drawText(line_rect, int(horizontal), line)
+                top += metric.height()
 
     def mousePressEvent(self, event) -> None:
         for element in ("recipient", "sender"):
@@ -829,7 +847,8 @@ class FormatSettingsDialog(QDialog):
 
     def __init__(self, current: LabelFormat, storage_path: Path,
                  sender_text: str = "Expéditeur", recipient_text: str = "Destinataire",
-                 parent: QWidget | None = None, print_test_callback=None):
+                 parent: QWidget | None = None, print_test_callback=None,
+                 format_saved_callback=None):
         super().__init__(parent)
         self.setWindowTitle("Formats d'étiquettes")
         self.resize(820, 560)
@@ -839,7 +858,11 @@ class FormatSettingsDialog(QDialog):
         self.formats = self.load_formats()
         self.current_format = current
         self.active_format_name = current.name
+        self.selected_format_name = current.name
+        self.pending_new_name: str | None = None
+        self._saved_format_values: dict | None = None
         self.print_test_callback = print_test_callback
+        self.format_saved_callback = format_saved_callback
 
         self.preset_list = QListWidget()
         self.preset_list.setMinimumWidth(210)
@@ -947,12 +970,13 @@ class FormatSettingsDialog(QDialog):
         form.setColumnStretch(2, 0)
         form.setColumnStretch(4, 0)
 
-        self.save_feedback = QLabel()
+        self.save_feedback = QLabel(self)
         self.save_feedback.setVisible(False)
         self.save_feedback.setStyleSheet(
             "QLabel { background: #e8f5e9; color: #216e39; border: 1px solid #9bd1a5; "
             "border-radius: 4px; padding: 7px 9px; }"
         )
+        self.save_feedback.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.geometry_feedback = QLabel()
         self.geometry_feedback.setWordWrap(True)
         self.geometry_feedback.setStyleSheet("QLabel { color: #a33a2b; padding: 4px 0; }")
@@ -960,8 +984,6 @@ class FormatSettingsDialog(QDialog):
         position_button.clicked.connect(self.open_position_editor)
         save_button = QPushButton("Enregistrer le format")
         save_button.clicked.connect(self.save_format)
-        delete_button = QPushButton("Supprimer")
-        delete_button.clicked.connect(self.delete_format)
         apply_button = QPushButton("Utiliser ce format")
         apply_button.clicked.connect(self.accept)
         cancel_button = QPushButton("Annuler")
@@ -978,16 +1000,30 @@ class FormatSettingsDialog(QDialog):
         editor.addWidget(position_button)
         editor.addWidget(save_button)
         editor.addWidget(self.geometry_feedback)
-        editor.addWidget(self.save_feedback)
         editor.addStretch()
         editor.addWidget(apply_button)
         editor.addWidget(cancel_button)
         editor.addSpacing(12)
-        editor.addWidget(delete_button)
 
         left = QVBoxLayout()
         left.addWidget(QLabel("Formats disponibles"))
         left.addWidget(self.preset_list)
+        list_actions = QHBoxLayout()
+        add_button = QPushButton("+")
+        add_button.setFixedWidth(32)
+        add_button.setToolTip("Ajouter un nouveau format")
+        add_button.setAccessibleName("Ajouter un nouveau format")
+        add_button.clicked.connect(self.add_format)
+        delete_button = QPushButton()
+        delete_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        delete_button.setFixedWidth(32)
+        delete_button.setToolTip("Supprimer le format sélectionné")
+        delete_button.setAccessibleName("Supprimer le format sélectionné")
+        delete_button.clicked.connect(self.delete_format)
+        list_actions.addWidget(add_button)
+        list_actions.addStretch()
+        list_actions.addWidget(delete_button)
+        left.addLayout(list_actions)
         layout = QHBoxLayout(self)
         layout.addLayout(left, 1)
         layout.addLayout(editor, 2)
@@ -1045,12 +1081,49 @@ class FormatSettingsDialog(QDialog):
                 return item
         return None
 
+    def restore_format_selection(self, item: QListWidgetItem) -> None:
+        self.preset_list.blockSignals(True)
+        self.preset_list.clearSelection()
+        item.setSelected(True)
+        self.preset_list.setCurrentItem(item)
+        self.preset_list.scrollToItem(item)
+        self.preset_list.setFocus()
+        self.preset_list.blockSignals(False)
+
+    def restore_format_selection_later(self, item: QListWidgetItem) -> None:
+        QTimer.singleShot(0, lambda: self.restore_format_selection(item))
+
     def select_format(self, item: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
-        del previous
         if item is None:
             return
         name = item.data(self.FORMAT_NAME_ROLE)
+        if (previous is not None and name != self.selected_format_name
+                and self.has_unsaved_changes()):
+            decision = QMessageBox.question(
+                self,
+                "Modifications non enregistrées",
+                "Les modifications du format actuel ne sont pas enregistrées.\n"
+                "Voulez-vous les enregistrer avant de changer de format?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if decision == QMessageBox.StandardButton.Cancel:
+                self.restore_format_selection_later(previous)
+                return
+            if decision == QMessageBox.StandardButton.Save:
+                if not self.save_format(previous):
+                    self.restore_format_selection_later(previous)
+                    return
+        if self.pending_new_name is not None and name != self.pending_new_name:
+            pending_item = self.find_format_item(self.pending_new_name)
+            if pending_item is not None:
+                self.preset_list.takeItem(self.preset_list.row(pending_item))
+            self.formats.pop(self.pending_new_name, None)
+            self.pending_new_name = None
         values = self.formats[name]
+        self.selected_format_name = name
         self.name.setText(name)
         defaults = asdict(LabelFormat(name))
         for field in ("page_width", "page_height", "columns", "rows", "margin_left", "margin_top", "gap_x", "gap_y"):
@@ -1084,6 +1157,11 @@ class FormatSettingsDialog(QDialog):
             self.preview.format.start_column = self.start_column
             self.preview.format.start_row = self.start_row
             self.preview.update()
+        self._saved_format_values = asdict(self.current_values())
+
+    def has_unsaved_changes(self) -> bool:
+        return (self._saved_format_values is not None
+                and asdict(self.current_values()) != self._saved_format_values)
 
     def update_active_format_marker(self) -> None:
         marker = QPixmap(16, 16)
@@ -1100,6 +1178,24 @@ class FormatSettingsDialog(QDialog):
         for index in range(self.preset_list.count()):
             item = self.preset_list.item(index)
             item.setIcon(icon if item.data(self.FORMAT_NAME_ROLE) == self.active_format_name else QIcon())
+
+    def add_format(self) -> None:
+        if self.pending_new_name is not None:
+            old_item = self.find_format_item(self.pending_new_name)
+            if old_item is not None:
+                self.preset_list.takeItem(self.preset_list.row(old_item))
+            self.formats.pop(self.pending_new_name, None)
+        index = 1
+        name = "Nouveau format"
+        while name in self.formats:
+            index += 1
+            name = f"Nouveau format {index}"
+        label_format = LabelFormat(name)
+        self.formats[name] = asdict(label_format)
+        item = self.format_list_item(name, self.formats[name])
+        self.preset_list.addItem(item)
+        self.pending_new_name = name
+        self.preset_list.setCurrentItem(item)
 
     def current_values(self) -> LabelFormat:
         return LabelFormat(
@@ -1219,23 +1315,49 @@ class FormatSettingsDialog(QDialog):
         self.recipient_vertical_alignment = edited.recipient_vertical_alignment
         self.update_preview()
 
-    def save_format(self) -> None:
+    def save_format(self, item: QListWidgetItem | None = None) -> bool:
         label_format = self.current_values()
-        self.formats[label_format.name] = asdict(label_format) | {"name": None}
-        self.formats[label_format.name].pop("name", None)
+        item = item or self.preset_list.currentItem()
+        if item is None:
+            return False
+        original_name = item.data(self.FORMAT_NAME_ROLE)
+        if label_format.name != original_name and label_format.name in self.formats:
+            QMessageBox.warning(
+                self, "Nom déjà utilisé", "Un format porte déjà ce nom."
+            )
+            return False
+        values = asdict(label_format)
+        values.pop("name", None)
+        updated_formats = dict(self.formats)
+        updated_formats.pop(original_name, None)
+        updated_formats[label_format.name] = values
         try:
-            save_formats(self.storage_path, self.formats)
+            save_formats(self.storage_path, updated_formats)
         except OSError as error:
             QMessageBox.warning(self, "Enregistrement impossible", str(error))
-            return
-        item = self.find_format_item(label_format.name)
-        if item is None:
-            self.preset_list.addItem(self.format_list_item(label_format.name, asdict(label_format)))
-        else:
-            item.setText(self.format_list_item(label_format.name, asdict(label_format)).text())
+            return False
+        self.formats = updated_formats
+        item.setData(self.FORMAT_NAME_ROLE, label_format.name)
+        item.setText(self.format_list_item(label_format.name, values).text())
+        if self.active_format_name == original_name:
+            self.active_format_name = label_format.name
+            self.update_active_format_marker()
+            if self.format_saved_callback is not None:
+                self.format_saved_callback(label_format)
+        self.selected_format_name = label_format.name
+        if self.pending_new_name == original_name:
+            self.pending_new_name = None
+        self._saved_format_values = asdict(label_format)
         self.save_feedback.setText(f"✓ Format enregistré : {label_format.name}")
-        self.save_feedback.setVisible(True)
-        QTimer.singleShot(4000, self.save_feedback.hide)
+        self.save_feedback.adjustSize()
+        self.save_feedback.move(
+            self.width() - self.save_feedback.width() - 16,
+            16,
+        )
+        self.save_feedback.raise_()
+        self.save_feedback.show()
+        QTimer.singleShot(1800, self.save_feedback.hide)
+        return True
 
     def delete_format(self) -> None:
         item = self.preset_list.currentItem()
@@ -1247,6 +1369,15 @@ class FormatSettingsDialog(QDialog):
             )
             return
         name = item.data(self.FORMAT_NAME_ROLE)
+        decision = QMessageBox.question(
+            self,
+            "Confirmer la suppression",
+            f"Supprimer le format « {name} » ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if decision != QMessageBox.StandardButton.Yes:
+            return
         self.formats.pop(name, None)
         try:
             save_formats(self.storage_path, self.formats)

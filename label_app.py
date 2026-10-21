@@ -1068,6 +1068,9 @@ class EnvelopeEditorDialog(QDialog):
         self.postal_code_enabled = QCheckBox("Afficher le code postal dans des cases")
         self.postal_code_enabled.setChecked(layout_data.postal_code_enabled)
         self.load_background_button = QPushButton("Charger un fond")
+        self.load_background_button.setToolTip(
+            "Chargez une numérisation de la face de l'enveloppe (format jpeg)"
+        )
         self.load_background_button.clicked.connect(self.load_background)
         self.remove_background_button = QPushButton()
         self.remove_background_button.setIcon(
@@ -1263,7 +1266,7 @@ class EnvelopeEditorDialog(QDialog):
         control = QDoubleSpinBox()
         control.setRange(minimum, maximum)
         control.setDecimals(1)
-        control.setSingleStep(1)
+        control.setSingleStep(0.1)
         control.setValue(value)
         return control
 
@@ -1394,6 +1397,7 @@ class EnvelopeFormatDialog(QDialog):
         self.print_test_callback = print_test_callback
         self.active_name = active_name
         self.current_layout = EnvelopeLayout()
+        self.pending_new_name: str | None = None
 
         self.preset_list = QListWidget()
         self.preset_list.currentItemChanged.connect(self.select_format)
@@ -1402,8 +1406,6 @@ class EnvelopeFormatDialog(QDialog):
         edit_button.clicked.connect(self.edit_format)
         save_button = QPushButton("Enregistrer le format")
         save_button.clicked.connect(self.save_format)
-        delete_button = QPushButton("Supprimer")
-        delete_button.clicked.connect(self.delete_format)
         use_button = QPushButton("Utiliser ce format")
         use_button.clicked.connect(self.accept)
         cancel_button = QPushButton("Annuler")
@@ -1416,14 +1418,28 @@ class EnvelopeFormatDialog(QDialog):
         form.addWidget(save_button)
         form.addStretch()
         buttons = QHBoxLayout()
-        buttons.addWidget(delete_button)
-        buttons.addStretch()
         buttons.addWidget(cancel_button)
         buttons.addWidget(use_button)
         form.addLayout(buttons)
         left = QVBoxLayout()
         left.addWidget(QLabel("Formats disponibles"))
         left.addWidget(self.preset_list)
+        list_actions = QHBoxLayout()
+        add_button = QPushButton("+")
+        add_button.setFixedWidth(32)
+        add_button.setToolTip("Ajouter un nouveau format")
+        add_button.setAccessibleName("Ajouter un nouveau format")
+        add_button.clicked.connect(self.add_format)
+        delete_button = QPushButton()
+        delete_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        delete_button.setFixedWidth(32)
+        delete_button.setToolTip("Supprimer le format sélectionné")
+        delete_button.setAccessibleName("Supprimer le format sélectionné")
+        delete_button.clicked.connect(self.delete_format)
+        list_actions.addWidget(add_button)
+        list_actions.addStretch()
+        list_actions.addWidget(delete_button)
+        left.addLayout(list_actions)
         layout = QHBoxLayout(self)
         layout.addLayout(left, 1)
         layout.addLayout(form, 1)
@@ -1448,9 +1464,26 @@ class EnvelopeFormatDialog(QDialog):
         del previous
         if item is None:
             return
-        self.active_name = item.text()
+        name = item.text()
+        if self.pending_new_name is not None and name != self.pending_new_name:
+            self.formats.pop(self.pending_new_name, None)
+            self.pending_new_name = None
+        self.active_name = name
         self.name.setText(self.active_name)
         self.current_layout = EnvelopeLayout(**self.formats[self.active_name])
+
+    def add_format(self) -> None:
+        if self.pending_new_name is not None:
+            self.formats.pop(self.pending_new_name, None)
+            self.refresh_list(self.active_name)
+        index = 1
+        name = "Nouveau format"
+        while name in self.formats:
+            index += 1
+            name = f"Nouveau format {index}"
+        self.formats[name] = asdict(EnvelopeLayout())
+        self.pending_new_name = name
+        self.refresh_list(name)
 
     def edit_format(self) -> None:
         edited_layout = EnvelopeLayout(**asdict(self.current_layout))
@@ -1463,18 +1496,38 @@ class EnvelopeFormatDialog(QDialog):
 
     def save_format(self) -> None:
         name = self.name.text().strip()
-        if not name:
+        if not name or self.active_name not in self.formats:
+            return
+        original_name = self.active_name
+        if name != original_name and name in self.formats:
+            QMessageBox.warning(self, "Nom déjà utilisé", "Un format porte déjà ce nom.")
             return
         self.current_layout = EnvelopeLayout(**asdict(self.current_layout))
-        self.formats[name] = asdict(self.current_layout)
+        values = asdict(self.current_layout)
+        updated_formats = dict(self.formats)
+        updated_formats.pop(original_name, None)
+        updated_formats[name] = values
+        self.formats = updated_formats
         self.active_name = name
+        if self.pending_new_name == original_name:
+            self.pending_new_name = None
         self.refresh_list(name)
 
     def delete_format(self) -> None:
         if len(self.formats) <= 1 or self.active_name not in self.formats:
             return
+        decision = QMessageBox.question(
+            self,
+            "Confirmer la suppression",
+            f"Supprimer le format « {self.active_name} » ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if decision != QMessageBox.StandardButton.Yes:
+            return
         del self.formats[self.active_name]
         self.active_name = next(iter(self.formats))
+        self.pending_new_name = None
         self.refresh_list(self.active_name)
 
     def format_result(self) -> tuple[str, EnvelopeLayout, dict[str, dict]]:
@@ -2464,7 +2517,8 @@ class LabelWindow(QMainWindow):
         )
         dialog = FormatSettingsDialog(
             current, self.directory / "formats.json", sample_sender,
-            sample_recipient, self, self.print_test_page_format
+            sample_recipient, self, self.print_test_page_format,
+            self.apply_format_values
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
