@@ -52,6 +52,7 @@ class CsvLoadingTests(unittest.TestCase):
             document = load_csv(path)
 
         self.assertTrue(any("Code postal" in issue for issue in document.issues))
+        self.assertIn("ligne 3: Code postal manquant(s)", document.issues)
 
 
 if __name__ == "__main__":

@@ -40,19 +40,19 @@ def load_csv(path: Path) -> CsvDocument:
     with ``#EXPEDITEUR``. The first non-metadata row is the CSV header.
     """
     sender_lines: list[str] = []
-    csv_rows: list[list[str]] = []
+    csv_rows: list[tuple[int, list[str]]] = []
 
     with path.open("r", encoding="utf-8-sig", newline="") as csv_file:
-        for row in csv.reader(csv_file, delimiter=";"):
+        for line_number, row in enumerate(csv.reader(csv_file, delimiter=";"), start=1):
             if row and row[0].strip().upper() == "#EXPEDITEUR":
                 sender_lines.extend(value.strip() for value in row[1:] if value.strip())
             else:
-                csv_rows.append(row)
+                csv_rows.append((line_number, row))
 
     if not csv_rows:
         raise ValueError(f"Le fichier {path.name} est vide")
 
-    headers = [header.strip() for header in csv_rows[0]]
+    headers = [header.strip() for header in csv_rows[0][1]]
     missing = [column for column in REQUIRED_COLUMNS if column not in headers]
     if missing:
         raise ValueError(
@@ -64,7 +64,7 @@ def load_csv(path: Path) -> CsvDocument:
     issues: list[str] = []
     if not sender_lines:
         issues.append("expéditeur absent")
-    for line_number, row in enumerate(csv_rows[1:], start=2):
+    for line_number, row in csv_rows[1:]:
         if not any(value.strip() for value in row):
             continue
         values = [row[index].strip() if index < len(row) else "" for index in indexes.values()]

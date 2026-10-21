@@ -1488,11 +1488,15 @@ class LabelWindow(QMainWindow):
 
     def __init__(self, directory: Path):
         super().__init__()
-        self.setWindowTitle("Impression d'étiquettes et d'enveloppes")
+        self.setWindowTitle("EasyLabel - Impression d'étiquettes et d'enveloppes")
         self.setWindowIcon(application_icon())
         self.resize(860, 620)
-        self.settings = QSettings("Tik", "ImpressionEtiquettes")
+        self.settings = QSettings("EasyLabel", "ImpressionEtiquettes")
         saved_directory = self.settings.value("csv_directory", "")
+        if not saved_directory:
+            saved_directory = QSettings("Tik", "ImpressionEtiquettes").value(
+                "csv_directory", ""
+            )
         saved_path = Path(saved_directory) if saved_directory else directory
         self.directory = saved_path if saved_path.is_dir() else directory
         self.files: dict[str, Path] = {}
@@ -1617,8 +1621,6 @@ class LabelWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("Fichier")
         choose_directory_action = file_menu.addAction("Choisir le dossier CSV...")
         choose_directory_action.triggered.connect(self.choose_directory)
-        self.directory_action = file_menu.addAction(str(self.directory))
-        self.directory_action.setEnabled(False)
         refresh_files_action = file_menu.addAction("Actualiser les fichiers CSV")
         refresh_files_action.triggered.connect(self.refresh_files)
         file_menu.addSeparator()
@@ -1707,7 +1709,7 @@ class LabelWindow(QMainWindow):
         dialog.setWindowTitle("À propos")
 
         content = QVBoxLayout(dialog)
-        content.addWidget(QLabel("Tik - Impression d'étiquettes et d'enveloppes"))
+        content.addWidget(QLabel("EasyLabel - Impression d'étiquettes et d'enveloppes"))
         content.addSpacing(12)
         content.addWidget(QLabel("Pour le Syndicat SUD"))
         content.addSpacing(12)
@@ -1733,7 +1735,7 @@ class LabelWindow(QMainWindow):
 
     def show_manual(self) -> None:
         dialog = QDialog(self)
-        dialog.setWindowTitle("Manuel de Tik")
+        dialog.setWindowTitle("Manuel de EasyLabel")
         dialog.resize(820, 680)
 
         browser = QTextBrowser(dialog)
@@ -1898,7 +1900,6 @@ class LabelWindow(QMainWindow):
         self.file_list.clear()
         self.directory_info.setText(str(directory))
         self.directory_info.setToolTip(str(directory))
-        self.directory_action.setText(str(directory))
         self.load_directory_files()
 
     def add_file(self, path: Path) -> None:

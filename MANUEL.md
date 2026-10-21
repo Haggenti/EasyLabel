@@ -1,8 +1,8 @@
-# Manuel de Tik
+# Manuel de EasyLabel
 
-## Bienvenue dans Tik
+## Bienvenue dans EasyLabel
 
-Tik prépare et imprime des étiquettes et des enveloppes à partir de fichiers CSV.
+EasyLabel prépare et imprime des étiquettes et des enveloppes à partir de fichiers CSV.
 Ce manuel explique les principales étapes, sans réglage technique inutile.
 
 Le principe est toujours le même :
@@ -14,7 +14,7 @@ Le principe est toujours le même :
 
 ## 1. Préparer les fichiers CSV
 
-Tik utilise des fichiers CSV séparés par des points-virgules (`;`).
+EasyLabel utilise des fichiers CSV séparés par des points-virgules (`;`).
 
 La première ligne doit contenir ces quatre colonnes :
 
