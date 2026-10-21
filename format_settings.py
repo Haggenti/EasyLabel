@@ -159,7 +159,7 @@ class LabelFormat:
     recipient_offset_x: float = 0
     recipient_offset_y: float = 0
     sender_width: float = 96
-    recipient_width: float = 96
+    recipient_width: float = 100
     recipient_height: float = 60
     sender_font_family: str = "DejaVu Sans Condensed"
     sender_font_size: float = 9

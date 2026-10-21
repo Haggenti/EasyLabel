@@ -710,6 +710,69 @@ def fit_font(text: str, rect: QRectF, base_size: int = 15, minimum_size: int = 9
     return font, False
 
 
+def draw_fitted_lines(painter: QPainter, text: str, rect: QRectF,
+                      alignment: Qt.AlignmentFlag, vertical_alignment: Qt.AlignmentFlag,
+                      base_size: int, minimum_size: int, family: str,
+                      bold: bool, italic: bool) -> tuple[list[QFont], bool, bool]:
+    lines = text.splitlines() or [""]
+    fonts = []
+    reduced = False
+    for line in lines:
+        def font_at(size: float) -> QFont:
+            candidate = QFont(family)
+            candidate.setPointSizeF(size)
+            candidate.setBold(bold)
+            candidate.setItalic(italic)
+            return candidate
+
+        minimum_font = font_at(minimum_size)
+        maximum_font = font_at(base_size)
+        metrics = QFontMetricsF(maximum_font, painter.device())
+        if metrics.tightBoundingRect(line).width() <= rect.width():
+            font = maximum_font
+        else:
+            lower = float(minimum_size)
+            upper = float(base_size)
+            for _ in range(24):
+                middle = (lower + upper) / 2
+                candidate = font_at(middle)
+                metrics = QFontMetricsF(candidate, painter.device())
+                if metrics.tightBoundingRect(line).width() <= rect.width():
+                    lower = middle
+                else:
+                    upper = middle
+            font = font_at(lower)
+            metrics = QFontMetricsF(font, painter.device())
+            if metrics.tightBoundingRect(line).width() > rect.width():
+                font = minimum_font
+        reduced = reduced or font.pointSizeF() < base_size
+        fonts.append(font)
+
+    total_height = sum(QFontMetricsF(font, painter.device()).height() for font in fonts)
+
+    if vertical_alignment == Qt.AlignmentFlag.AlignTop:
+        top = rect.top()
+    elif vertical_alignment == Qt.AlignmentFlag.AlignBottom:
+        top = rect.bottom() - total_height
+    else:
+        top = rect.top() + (rect.height() - total_height) / 2
+
+    painter.save()
+    y = top
+    overflow = total_height > rect.height()
+    for line, font in zip(lines, fonts):
+        metrics = QFontMetricsF(font, painter.device())
+        line_height = metrics.height()
+        line_rect = QRectF(rect.left(), y, rect.width(), line_height)
+        if metrics.tightBoundingRect(line).width() > rect.width():
+            overflow = True
+        painter.setFont(font)
+        painter.drawText(line_rect, int(alignment), line)
+        y += line_height
+    painter.restore()
+    return fonts, reduced, overflow
+
+
 def draw_postal_code(painter: QPainter, rect: QRectF, postal_code: str,
                      font: QFont, draw_guides: bool = False,
                      offset_x: float = 0, offset_y: float = 0) -> None:
@@ -801,40 +864,30 @@ def render_pdf(documents: list[CsvDocument], output_path: Path, columns: int, ro
 
             if sender_enabled:
                 sender_text = "\n".join(document.sender.lines)
-                sender_font, sender_was_reduced = fit_font(
-                    sender_text, sender_rect, int(sender_font_size), int(sender_min_size),
+                _, sender_was_reduced, sender_overflow = draw_fitted_lines(
+                    painter, sender_text, sender_rect,
+                    alignment_flag(sender_alignment, vertical_alignment_flag(sender_vertical_alignment)),
+                    vertical_alignment_flag(sender_vertical_alignment),
+                    int(sender_font_size), int(sender_min_size),
                     sender_font_family, sender_bold, sender_italic
                 )
                 if sender_was_reduced:
                     stats.reduced += 1
-                sender_flags = (alignment_flag(sender_alignment,
-                                               vertical_alignment_flag(sender_vertical_alignment))
-                                | Qt.TextFlag.TextWordWrap)
-                sender_bounds = QFontMetricsF(sender_font).boundingRect(
-                    sender_rect, int(sender_flags), sender_text
-                )
-                if text_overflows(sender_bounds, sender_rect, sender_font):
+                if sender_overflow:
                     label_overflow = True
-                painter.setFont(sender_font)
-                painter.drawText(sender_rect, sender_flags, sender_text)
 
             recipient_text = format_recipient_text(recipient)
-            recipient_font, was_reduced = fit_font(
-                recipient_text, recipient_rect, int(recipient_font_size), int(recipient_min_size),
+            _, was_reduced, recipient_overflow = draw_fitted_lines(
+                painter, recipient_text, recipient_rect,
+                alignment_flag(recipient_alignment, vertical_alignment_flag(recipient_vertical_alignment)),
+                vertical_alignment_flag(recipient_vertical_alignment),
+                int(recipient_font_size), int(recipient_min_size),
                 recipient_font_family, recipient_bold, recipient_italic
             )
             if was_reduced:
                 stats.reduced += 1
-            text_flags = (alignment_flag(recipient_alignment,
-                                         vertical_alignment_flag(recipient_vertical_alignment))
-                          | Qt.TextFlag.TextWordWrap)
-            bounds = QFontMetricsF(recipient_font).boundingRect(
-                recipient_rect, int(text_flags), recipient_text
-            )
-            if text_overflows(bounds, recipient_rect, recipient_font):
+            if recipient_overflow:
                 label_overflow = True
-            painter.setFont(recipient_font)
-            painter.drawText(recipient_rect, text_flags, recipient_text)
             if label_overflow:
                 stats.overflow += 1
             slot += 1
@@ -923,17 +976,17 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                                  mm(sender_height))
             if sender_enabled:
                 sender_text = "\n".join(document.sender.lines)
-                sender_font, sender_was_reduced = fit_font(
-                    sender_text, sender_rect, int(sender_font_size), 4,
+                _, sender_was_reduced, sender_overflow = draw_fitted_lines(
+                    painter, sender_text, sender_rect,
+                    alignment_flag(sender_alignment, vertical_alignment_flag(sender_vertical_alignment)),
+                    vertical_alignment_flag(sender_vertical_alignment),
+                    int(sender_font_size), 4,
                     sender_font_family, sender_bold, sender_italic
                 )
                 if sender_was_reduced:
                     stats.reduced += 1
-                painter.setFont(sender_font)
-                painter.drawText(sender_rect,
-                                 alignment_flag(sender_alignment,
-                                                vertical_alignment_flag(sender_vertical_alignment))
-                                 | Qt.TextFlag.TextWordWrap, sender_text)
+                if sender_overflow:
+                    stats.overflow += 1
 
             recipient_rect = QRectF(mm(recipient_x), mm(recipient_y),
                                     mm(recipient_width), mm(recipient_height))
@@ -944,26 +997,21 @@ def render_envelope_pdf(documents: list[CsvDocument], output_path: Path,
                 painter.drawRect(recipient_rect)
                 painter.restore()
             recipient_text = format_recipient_text(recipient, not postal_code_enabled)
-            recipient_font, was_reduced = fit_font(
-                recipient_text, recipient_rect, int(recipient_font_size), 4,
+            recipient_fonts, was_reduced, recipient_overflow = draw_fitted_lines(
+                painter, recipient_text, recipient_rect,
+                alignment_flag(recipient_alignment, vertical_alignment_flag(recipient_vertical_alignment)),
+                vertical_alignment_flag(recipient_vertical_alignment),
+                int(recipient_font_size), 4,
                 recipient_font_family, recipient_bold, recipient_italic
             )
             if was_reduced:
                 stats.reduced += 1
-            text_flags = (alignment_flag(recipient_alignment,
-                                         vertical_alignment_flag(recipient_vertical_alignment))
-                          | Qt.TextFlag.TextWordWrap)
-            bounds = QFontMetricsF(recipient_font).boundingRect(
-                recipient_rect, int(text_flags), recipient_text
-            )
-            if text_overflows(bounds, recipient_rect, recipient_font):
+            if recipient_overflow:
                 stats.overflow += 1
-            painter.setFont(recipient_font)
-            painter.drawText(recipient_rect, text_flags, recipient_text)
             if postal_code_enabled:
                 postal_rect = QRectF(mm(postal_code_x), mm(postal_code_y),
                                      mm(postal_code_width), mm(postal_code_height))
-                postal_font = QFont(recipient_font)
+                postal_font = QFont(max(recipient_fonts, key=lambda font: font.pointSizeF()))
                 postal_code = format_postal_code(recipient.postal_code)
                 draw_postal_code(
                     painter, postal_rect, postal_code, postal_font, show_guides,
@@ -1474,7 +1522,7 @@ class LabelWindow(QMainWindow):
         self.recipient_offset_x = 0.0
         self.recipient_offset_y = 0.0
         self.sender_width = 96.0
-        self.recipient_width = 96.0
+        self.recipient_width = 100.0
         self.recipient_height = 60.0
         self.sender_font_family = "DejaVu Sans Condensed"
         self.sender_font_size = 9.0
@@ -2019,9 +2067,9 @@ class LabelWindow(QMainWindow):
 
     def update_active_format_display(self) -> None:
         if self.mode.currentIndex() == 1:
-            text = f"Format enveloppe actif : {self.envelope_format.currentText()}"
+            text = f"Mode enveloppe : {self.envelope_format.currentText()}"
         else:
-            text = f"Format actif : {self.format_name}"
+            text = f"Mode étiquette : {self.format_name}"
         self.preset_info.setText(text)
 
     def open_format_manager(self) -> None:
@@ -2510,10 +2558,7 @@ class LabelWindow(QMainWindow):
 
     @staticmethod
     def render_summary(stats: RenderStats, verb: str) -> str:
-        message = f"{stats.labels} étiquette(s) {verb}.\n{stats.pages} page(s) à imprimer."
-        if stats.overflow:
-            message += f"\nAttention : {stats.overflow} étiquette(s) trop longue(s)."
-        return message
+        return f"{stats.labels} étiquette(s) {verb}.\n{stats.pages} page(s) à imprimer."
 
     def export_pdf(self) -> None:
         temporary_pdf = None
@@ -2913,8 +2958,6 @@ class PdfPreviewDialog(QDialog):
                     f"{stats.labels} étiquette(s) préparée(s).\n"
                     f"{stats.pages} page(s) à imprimer."
                 )
-                if stats.overflow:
-                    summary += f"\nAttention : {stats.overflow} étiquette(s) trop longue(s)."
                 self.summary_label.setText(summary)
         except (OSError, ValueError):
             self.guides_checkbox.blockSignals(True)
