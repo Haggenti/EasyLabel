@@ -91,13 +91,19 @@ def extract_document(input_path):
                 break
 
         if city_index is not None:
-            adresse = "\n".join(recipient_lines[:city_index]).strip()
+            address_lines = [line.strip() for line in recipient_lines[:city_index] if line.strip()]
         elif recipient_lines:
-            adresse = "\n".join(recipient_lines).strip()
+            address_lines = [line.strip() for line in recipient_lines if line.strip()]
+        else:
+            address_lines = []
+
+        adresse = address_lines[0] if address_lines else ""
+        adresse_2 = address_lines[1] if len(address_lines) > 1 else ""
 
         rows.append({
             "Destinataire": recipient_name,
             "Adresse": adresse,
+            "Adresse 2": adresse_2,
             "Code postal": code_postal,
             "Ville": ville,
         })
@@ -122,7 +128,7 @@ def convert_file(input_path, output_path):
             f.write(f"#EXPEDITEUR;{line}\n")
         writer = csv.DictWriter(
             f,
-            fieldnames=["Destinataire", "Adresse", "Code postal", "Ville"],
+            fieldnames=["Destinataire", "Adresse", "Adresse 2", "Code postal", "Ville"],
             delimiter=";",
         )
         writer.writeheader()

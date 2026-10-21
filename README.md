@@ -23,14 +23,15 @@ python3 label_app.py /chemin/vers/les/csv
 ```
 
 Les fichiers utilisent le séparateur `;`. Les lignes d'expéditeur sont
-optionnelles et doivent précéder l'en-tête :
+optionnelles et doivent précéder l'en-tête. La colonne `Adresse 2` est
+optionnelle et permet de forcer une deuxième ligne d'adresse :
 
 ```csv
 #EXPEDITEUR;SUD PTT 81 - 12 - 46 - 82
 #EXPEDITEUR;59, rue Raymond Sommer - 81000 ALBI
 #EXPEDITEUR;05 63 38 43 81 - sud81laposte@gmail.com
-Destinataire;Adresse;Code postal;Ville
-LA POSTE;Le Bourg;46500;ALVIGNAC
+Destinataire;Adresse;Adresse 2;Code postal;Ville
+LA POSTE;21 avenue du Test;Bâtiment A;46500;ALVIGNAC
 ```
 
 ## Impression sur enveloppes

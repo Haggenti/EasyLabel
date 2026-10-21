@@ -16,11 +16,12 @@ Le principe est toujours le même :
 
 EasyLabel utilise des fichiers CSV séparés par des points-virgules (`;`).
 
-La première ligne doit contenir ces quatre colonnes :
+La première ligne doit contenir ces quatre colonnes. La colonne `Adresse 2`
+est optionnelle et permet de forcer une deuxième ligne d'adresse :
 
 ```text
-Destinataire;Adresse;Code postal;Ville
-LA POSTE;Le Bourg;46500;ALVIGNAC
+Destinataire;Adresse;Adresse 2;Code postal;Ville
+LA POSTE;21 avenue du Test;Bâtiment A;46500;ALVIGNAC
 ```
 
 Les lignes d'expéditeur sont facultatives. Elles doivent être placées avant
@@ -30,7 +31,7 @@ l'en-tête et commencer par `#EXPEDITEUR` :
 #EXPEDITEUR;SUD PTT
 #EXPEDITEUR;59, rue Raymond Sommer - 81000 ALBI
 #EXPEDITEUR;05 63 38 43 81
-Destinataire;Adresse;Code postal;Ville
+Destinataire;Adresse;Adresse 2;Code postal;Ville
 ```
 
 Enregistrez le fichier en UTF-8. Un triangle d'avertissement signale qu'une

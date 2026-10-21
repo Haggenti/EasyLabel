@@ -54,6 +54,19 @@ class CsvLoadingTests(unittest.TestCase):
         self.assertTrue(any("Code postal" in issue for issue in document.issues))
         self.assertIn("ligne 3: Code postal manquant(s)", document.issues)
 
+    def test_combines_optional_second_address_column(self):
+        content = (
+            "Destinataire;Adresse;Adresse 2;Code postal;Ville\n"
+            "LA POSTE;21 avenue du Test;Bâtiment A;46500;GRAMAT\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "labels.csv"
+            path.write_text(content, encoding="utf-8")
+
+            document = load_csv(path)
+
+        self.assertEqual(document.recipients[0].address, "21 avenue du Test\nBâtiment A")
+
 
 if __name__ == "__main__":
     unittest.main()

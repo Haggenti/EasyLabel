@@ -60,6 +60,7 @@ def load_csv(path: Path) -> CsvDocument:
         )
 
     indexes = {column: headers.index(column) for column in REQUIRED_COLUMNS}
+    address_2_index = headers.index("Adresse 2") if "Adresse 2" in headers else None
     recipients: list[Recipient] = []
     issues: list[str] = []
     if not sender_lines:
@@ -68,6 +69,10 @@ def load_csv(path: Path) -> CsvDocument:
         if not any(value.strip() for value in row):
             continue
         values = [row[index].strip() if index < len(row) else "" for index in indexes.values()]
+        if address_2_index is not None and address_2_index < len(row):
+            address_2 = row[address_2_index].strip()
+            if address_2:
+                values[1] = f"{values[1]}\n{address_2}" if values[1] else address_2
         if not any(values):
             continue
         missing = [column for column, value in zip(REQUIRED_COLUMNS, values) if not value]
