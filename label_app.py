@@ -31,12 +31,14 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
     QScrollArea,
+    QStyle,
     QTextBrowser,
     QVBoxLayout,
     QHBoxLayout,
     QComboBox,
     QFontComboBox,
     QCheckBox,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHeaderView,
@@ -979,17 +981,22 @@ class EnvelopeEditorDialog(QDialog):
                  postal_code_text: str = "00000", print_test_callback=None):
         super().__init__(parent)
         self.setWindowTitle("Ajuster l’enveloppe")
-        self.resize(820, 440)
+        self.setMinimumWidth(420)
+        self.resize(430, 500)
         self.setModal(True)
         self.layout_data = layout_data
         self.print_test_callback = print_test_callback
+        self._closing_linked_windows = False
         if Path(layout_data.background_image).suffix.lower() not in {".jpg", ".jpeg"}:
             self.layout_data.background_image = ""
         self.page_width = self.number(layout_data.page_width, 80, 500)
         self.page_height = self.number(layout_data.page_height, 50, 300)
+        self.page_width.setMaximumWidth(110)
+        self.page_height.setMaximumWidth(110)
         self.page_width.valueChanged.connect(self.update_page)
         self.page_height.valueChanged.connect(self.update_page)
         self.sender_font = QFontComboBox()
+        self.sender_font.setMaximumWidth(260)
         self.sender_enabled = QCheckBox("Afficher l’expéditeur")
         self.sender_enabled.setChecked(layout_data.sender_enabled)
         self.sender_font.setCurrentFont(QFont(layout_data.sender_font_family))
@@ -1001,6 +1008,7 @@ class EnvelopeEditorDialog(QDialog):
         self.sender_alignment = self._alignment(layout_data.sender_alignment)
         self.sender_vertical_alignment = self._vertical_alignment(layout_data.sender_vertical_alignment)
         self.recipient_font = QFontComboBox()
+        self.recipient_font.setMaximumWidth(260)
         self.recipient_font.setCurrentFont(QFont(layout_data.recipient_font_family))
         self.recipient_size = self.number(layout_data.recipient_font_size, 4, 40)
         self.recipient_bold = QCheckBox("Gras")
@@ -1013,7 +1021,14 @@ class EnvelopeEditorDialog(QDialog):
         self.postal_code_enabled.setChecked(layout_data.postal_code_enabled)
         self.load_background_button = QPushButton("Charger un fond")
         self.load_background_button.clicked.connect(self.load_background)
-        self.remove_background_button = QPushButton("Enlever le fond")
+        self.remove_background_button = QPushButton()
+        self.remove_background_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self.remove_background_button.setIconSize(QSize(16, 16))
+        self.remove_background_button.setFixedWidth(32)
+        self.remove_background_button.setToolTip("Enlever le fond")
+        self.remove_background_button.setAccessibleName("Enlever le fond")
         self.remove_background_button.setEnabled(bool(layout_data.background_image))
         self.remove_background_button.clicked.connect(self.remove_background)
         for control in (self.sender_enabled, self.sender_font, self.sender_size, self.sender_bold,
@@ -1051,9 +1066,6 @@ class EnvelopeEditorDialog(QDialog):
         canvas_scroll.setWidget(self.canvas)
         canvas_window_layout.addWidget(canvas_scroll)
         self.canvas_window.finished.connect(self.canvas_window_closed)
-        open_canvas_button = QPushButton("Ouvrir l’aperçu dans une fenêtre")
-        open_canvas_button.clicked.connect(self.show_canvas_window)
-        self.open_canvas_button = open_canvas_button
         zoom_out_button = QPushButton("−")
         zoom_out_button.setToolTip("Réduire le zoom")
         zoom_out_button.clicked.connect(lambda: self.canvas.set_zoom(self.canvas.zoom - 0.25))
@@ -1073,38 +1085,60 @@ class EnvelopeEditorDialog(QDialog):
         zoom_controls.addWidget(zoom_in_button)
         zoom_controls.addWidget(zoom_value)
         zoom_controls.addStretch()
-        zoom_controls.addWidget(open_canvas_button)
+        zoom_controls.addWidget(self.load_background_button)
+        zoom_controls.addWidget(self.remove_background_button)
+        canvas_window_layout.insertLayout(0, zoom_controls)
 
-        settings = QGridLayout()
-        settings.addWidget(QLabel("Largeur enveloppe (mm)"), 0, 0)
-        settings.addWidget(self.page_width, 0, 1)
-        settings.addWidget(QLabel("Hauteur enveloppe (mm)"), 0, 2)
-        settings.addWidget(self.page_height, 0, 3)
-        settings.addWidget(QLabel("Police expéditeur"), 1, 0)
-        settings.addWidget(self.sender_font, 1, 1)
+        settings = QVBoxLayout()
+
+        dimensions = QGridLayout()
+        dimensions.addWidget(QLabel("Largeur enveloppe (mm)"), 0, 0)
+        dimensions.addWidget(self.page_width, 0, 1)
+        dimensions.addWidget(QLabel("Hauteur enveloppe (mm)"), 1, 0)
+        dimensions.addWidget(self.page_height, 1, 1)
+        dimensions.setHorizontalSpacing(4)
+        settings.addLayout(dimensions)
+
+        sender_group = QVBoxLayout()
+        sender_group.addWidget(self.sender_enabled)
+        sender_font_row = QHBoxLayout()
+        sender_font_row.addWidget(QLabel("Police"))
+        sender_font_row.addWidget(self.sender_font)
+        sender_font_row.addWidget(self.sender_size)
+        sender_font_row.addStretch()
+        sender_group.addLayout(sender_font_row)
         sender_style = QHBoxLayout()
-        sender_style.addWidget(self.sender_size)
         sender_style.addWidget(self.sender_bold)
         sender_style.addWidget(self.sender_italic)
         sender_style.addWidget(self.sender_alignment)
         sender_style.addWidget(self.sender_vertical_alignment)
-        settings.addLayout(sender_style, 1, 2, 1, 2)
-        settings.addWidget(self.sender_enabled, 2, 0, 1, 4)
-        settings.addWidget(QLabel("Police destinataire"), 3, 0)
-        settings.addWidget(self.recipient_font, 3, 1)
+        sender_style.addStretch()
+        sender_group.addLayout(sender_style)
+        settings.addWidget(self._separator())
+        settings.addWidget(QLabel("Expéditeur"))
+        settings.addLayout(sender_group)
+
+        recipient_group = QVBoxLayout()
+        recipient_font_row = QHBoxLayout()
+        recipient_font_row.addWidget(QLabel("Police"))
+        recipient_font_row.addWidget(self.recipient_font)
+        recipient_font_row.addWidget(self.recipient_size)
+        recipient_font_row.addStretch()
+        recipient_group.addLayout(recipient_font_row)
         recipient_style = QHBoxLayout()
-        recipient_style.addWidget(self.recipient_size)
         recipient_style.addWidget(self.recipient_bold)
         recipient_style.addWidget(self.recipient_italic)
         recipient_style.addWidget(self.recipient_alignment)
         recipient_style.addWidget(self.recipient_vertical_alignment)
-        settings.addLayout(recipient_style, 3, 2, 1, 2)
-        settings.addWidget(self.postal_code_enabled, 4, 0, 1, 4)
-        background_buttons = QHBoxLayout()
-        background_buttons.addWidget(self.load_background_button)
-        background_buttons.addWidget(self.remove_background_button)
-        settings.addLayout(background_buttons, 5, 0, 1, 4)
-        instructions = QLabel("Déplacez les blocs ou leur poignée pour les ajuster.")
+        recipient_style.addStretch()
+        recipient_group.addLayout(recipient_style)
+        settings.addWidget(self._separator())
+        settings.addWidget(QLabel("Destinataire"))
+        settings.addLayout(recipient_group)
+
+        settings.addWidget(self._separator())
+        settings.addWidget(self.postal_code_enabled)
+
         reset_button = QPushButton("Réinitialiser")
         reset_button.clicked.connect(self.reset_layout)
         cancel_button = QPushButton("Annuler")
@@ -1113,19 +1147,22 @@ class EnvelopeEditorDialog(QDialog):
         apply_button.clicked.connect(self.accept)
         test_button = QPushButton("Imprimer une enveloppe test")
         test_button.clicked.connect(self.print_test)
-        buttons = QHBoxLayout()
-        buttons.addWidget(reset_button)
-        buttons.addStretch()
-        buttons.addWidget(test_button)
-        buttons.addWidget(cancel_button)
-        buttons.addWidget(apply_button)
+        test_row = QHBoxLayout()
+        test_row.addWidget(test_button)
+        test_row.addStretch()
+        final_row = QHBoxLayout()
+        final_row.addWidget(reset_button)
+        final_row.addStretch()
+        final_row.addWidget(cancel_button)
+        final_row.addWidget(apply_button)
+        buttons = QVBoxLayout()
+        buttons.addLayout(test_row)
+        buttons.addLayout(final_row)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(5)
-        settings.setVerticalSpacing(4)
+        settings.setSpacing(5)
         layout.addLayout(settings)
-        layout.addLayout(zoom_controls)
-        layout.addWidget(instructions)
         layout.addLayout(buttons)
         self.show_canvas_window()
 
@@ -1140,7 +1177,6 @@ class EnvelopeEditorDialog(QDialog):
         self.canvas_window.activateWindow()
         QTimer.singleShot(0, self.fit_canvas_to_window)
         QTimer.singleShot(0, self.focus_canvas_window)
-        self.open_canvas_button.setEnabled(False)
 
     def fit_canvas_to_window(self) -> None:
         viewport = self.canvas_scroll.viewport().size()
@@ -1160,10 +1196,18 @@ class EnvelopeEditorDialog(QDialog):
             self.canvas.setFocus()
 
     def canvas_window_closed(self) -> None:
-        self.open_canvas_button.setEnabled(True)
+        if not self._closing_linked_windows and self.isVisible():
+            self._closing_linked_windows = True
+            try:
+                self.close()
+            finally:
+                self._closing_linked_windows = False
 
     def closeEvent(self, event) -> None:
-        self.canvas_window.close()
+        if not self._closing_linked_windows:
+            self._closing_linked_windows = True
+            self.canvas_window.close()
+            self._closing_linked_windows = False
         super().closeEvent(event)
 
     @staticmethod
@@ -1174,6 +1218,13 @@ class EnvelopeEditorDialog(QDialog):
         control.setSingleStep(1)
         control.setValue(value)
         return control
+
+    @staticmethod
+    def _separator() -> QFrame:
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        return separator
 
     @staticmethod
     def _alignment(value: str) -> QComboBox:
