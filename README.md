@@ -3,10 +3,10 @@
 ## Lancer l'application
 
 Lancez `launcher.sh` sous Linux/macOS ou `launcher.bat` sous Windows. Le
-lanceur installe automatiquement les dépendances de `requirements.txt`, puis
-démarre l'application avec le Python système. Sous Linux, l'installation
-utilise l'option nécessaire aux distributions qui protègent leur Python
-système (PEP 668).
+lanceur utilise d'abord PySide6 fourni par la distribution Linux, afin de
+conserver le thème du bureau. Si PySide6 n'est pas installé, il crée
+automatiquement un environnement virtuel local `.venv`, y installe les
+dépendances de `requirements.txt`, puis démarre l'application.
 
 ```sh
 ./launcher.sh
@@ -25,10 +25,11 @@ déjà installées :
 python3 label_app.py
 ```
 
-Sur Debian, si Python ne fournit pas `pip`, installez-le une fois avec :
+Sur Debian/Ubuntu, si la création du venv échoue, installez le module manquant
+une fois avec :
 
 ```sh
-sudo apt install python3-pip
+sudo apt install python3-venv
 ```
 
 L'impression Windows utilise l'imprimante par défaut. Le choix de
