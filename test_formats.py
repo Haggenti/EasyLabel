@@ -30,6 +30,11 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(label_format.recipient_font_size, 15)
         self.assertEqual(label_format.corner_radius, 0)
 
+    def test_missing_csv_directory_falls_back_to_project_csv(self):
+        missing_directory = Path(tempfile.mkdtemp()) / "deleted-csv"
+        fallback = LabelWindow.existing_csv_directory(missing_directory)
+        self.assertEqual(fallback, Path(__file__).resolve().parent / "csv")
+
     def test_old_format_defaults_corner_radius_to_zero(self):
         path = Path(tempfile.mktemp(suffix=".json"))
         path.write_text(json.dumps({"Ancien": {"page_width": 210}}), encoding="utf-8")

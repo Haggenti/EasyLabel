@@ -1539,6 +1539,15 @@ class LabelWindow(QMainWindow):
     COPIES_ROLE = Qt.ItemDataRole.UserRole + 1
     BASE_LABEL_ROLE = Qt.ItemDataRole.UserRole + 2
 
+    @staticmethod
+    def existing_csv_directory(requested: Path) -> Path:
+        default_directory = Path(__file__).resolve().parent / "csv"
+        if requested.is_dir():
+            return requested
+        if default_directory.is_dir():
+            return default_directory
+        return Path(__file__).resolve().parent
+
     def __init__(self, directory: Path):
         super().__init__()
         self.setWindowTitle("EasyLabel - Impression d'étiquettes et d'enveloppes")
@@ -1551,7 +1560,7 @@ class LabelWindow(QMainWindow):
                 "csv_directory", ""
             )
         saved_path = Path(saved_directory) if saved_directory else directory
-        self.directory = saved_path if saved_path.is_dir() else directory
+        self.directory = self.existing_csv_directory(saved_path)
         self.files: dict[str, Path] = {}
         self.file_list = FileListWidget()
         self.file_list.itemChanged.connect(self.update_summary)
