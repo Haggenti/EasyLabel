@@ -2,15 +2,25 @@
 
 ## Lancer l'application
 
+Lancez `launcher.sh` sous Linux/macOS ou `launcher.bat` sous Windows. Le
+lanceur crée automatiquement un environnement virtuel local `.venv`, y
+installe les dépendances de `requirements.txt`, puis démarre l'application.
+
 ```sh
-python3 label_app.py
+./launcher.sh
 ```
 
-Sous Windows, installer les dépendances puis lancer `launcher.bat` :
+Sous Windows :
 
 ```bat
-python -m pip install -r requirements.txt
 launcher.bat
+```
+
+Le lancement direct de `label_app.py` reste possible si les dépendances sont
+déjà installées :
+
+```sh
+python3 label_app.py
 ```
 
 L'impression Windows utilise l'imprimante par défaut. Le choix de

@@ -1,4 +1,8 @@
 #!/bin/sh
 
 cd "$(dirname "$0")" || exit 1
-exec python3 label_app.py "$@"
+if [ ! -x .venv/bin/python ]; then
+	python3 -m venv .venv || exit 1
+fi
+.venv/bin/python -m pip install -r requirements.txt || exit 1
+exec .venv/bin/python label_app.py "$@"
