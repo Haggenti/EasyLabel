@@ -145,6 +145,70 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(other_item.icon().isNull())
         dialog.close()
 
+    def test_save_button_only_enables_for_unsaved_changes(self):
+        dialog = FormatSettingsDialog(LabelFormat("test"), Path("/tmp/tik-formats.json"))
+        self.assertFalse(dialog.save_button.isEnabled())
+
+        original_width = dialog.page_width.value()
+        dialog.page_width.setValue(original_width + 1)
+        self.assertTrue(dialog.save_button.isEnabled())
+
+        dialog.page_width.setValue(original_width)
+        self.assertFalse(dialog.save_button.isEnabled())
+        dialog.close()
+
+    def test_changing_format_does_not_enable_save_button(self):
+        path = Path(tempfile.mktemp(suffix=".json"))
+        path.write_text(json.dumps({
+            "Format 1": asdict(LabelFormat("Format 1")),
+            "Format 2": asdict(LabelFormat("Format 2", columns=2)),
+        }), encoding="utf-8")
+        try:
+            dialog = FormatSettingsDialog(LabelFormat("Format 1"), path)
+            dialog.preset_list.setCurrentItem(dialog.find_format_item("Format 2"))
+            self.assertFalse(dialog.save_button.isEnabled())
+            dialog.close()
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_apply_button_only_enables_for_an_inactive_format(self):
+        path = Path(tempfile.mktemp(suffix=".json"))
+        path.write_text(json.dumps({
+            "Format 1": asdict(LabelFormat("Format 1")),
+            "Format 2": asdict(LabelFormat("Format 2", columns=2)),
+        }), encoding="utf-8")
+        try:
+            dialog = FormatSettingsDialog(LabelFormat("Format 1"), path)
+            self.assertFalse(dialog.apply_button.isEnabled())
+
+            dialog.preset_list.setCurrentItem(dialog.find_format_item("Format 2"))
+            self.assertTrue(dialog.apply_button.isEnabled())
+            dialog.close()
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_deleting_active_format_activates_previous_format(self):
+        path = Path(tempfile.mktemp(suffix=".json"))
+        path.write_text(json.dumps({
+            "Format 1": asdict(LabelFormat("Format 1")),
+            "Format 2": asdict(LabelFormat("Format 2", columns=2)),
+            "Format 3": asdict(LabelFormat("Format 3", columns=3)),
+        }), encoding="utf-8")
+        applied = []
+        try:
+            dialog = FormatSettingsDialog(
+                LabelFormat("Format 2"), path, format_saved_callback=applied.append
+            )
+            with patch.object(QMessageBox, "question",
+                              return_value=QMessageBox.StandardButton.Yes):
+                dialog.delete_format()
+            self.assertEqual(dialog.active_format_name, "Format 1")
+            self.assertEqual(applied[-1].name, "Format 1")
+            self.assertEqual(dialog.preset_list.currentItem().text().split(" (")[0], "Format 1")
+            dialog.close()
+        finally:
+            path.unlink(missing_ok=True)
+
     def test_envelope_layout_round_trip(self):
         layout = EnvelopeLayout(
             page_width=229, page_height=162, sender_enabled=False,

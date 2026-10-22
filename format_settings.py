@@ -980,12 +980,13 @@ class FormatSettingsDialog(QDialog):
         self.geometry_feedback = QLabel()
         self.geometry_feedback.setWordWrap(True)
         self.geometry_feedback.setStyleSheet("QLabel { color: #a33a2b; padding: 4px 0; }")
-        position_button = QPushButton("Modifier la mise en page...")
+        position_button = QPushButton("Personnaliser les étiquettes")
+        position_button.setToolTip("Permet de modifier les elements affichés sur les etiquettes")
         position_button.clicked.connect(self.open_position_editor)
-        save_button = QPushButton("Enregistrer le format")
-        save_button.clicked.connect(self.save_format)
-        apply_button = QPushButton("Utiliser ce format")
-        apply_button.clicked.connect(self.accept)
+        self.save_button = QPushButton("Enregistrer le format")
+        self.save_button.clicked.connect(self.save_format)
+        self.apply_button = QPushButton("Utiliser ce format")
+        self.apply_button.clicked.connect(self.accept)
         cancel_button = QPushButton("Annuler")
         cancel_button.clicked.connect(self.reject)
         test_page_button = QPushButton("Imprimer une page de test")
@@ -998,10 +999,10 @@ class FormatSettingsDialog(QDialog):
         editor.addLayout(form)
         editor.addLayout(center_options)
         editor.addWidget(position_button)
-        editor.addWidget(save_button)
+        editor.addWidget(self.save_button)
         editor.addWidget(self.geometry_feedback)
         editor.addStretch()
-        editor.addWidget(apply_button)
+        editor.addWidget(self.apply_button)
         editor.addWidget(cancel_button)
         editor.addSpacing(12)
 
@@ -1034,7 +1035,10 @@ class FormatSettingsDialog(QDialog):
         item = self.find_format_item(current.name)
         if item is not None:
             self.preset_list.setCurrentItem(item)
+        else:
+            self._saved_format_values = asdict(self.current_values())
         self.update_preview()
+        self.update_apply_button()
 
     @staticmethod
     def _number(value: float, minimum: float, maximum: float, integer: bool = False,
@@ -1158,10 +1162,15 @@ class FormatSettingsDialog(QDialog):
             self.preview.format.start_row = self.start_row
             self.preview.update()
         self._saved_format_values = asdict(self.current_values())
+        self.save_button.setEnabled(False)
+        self.update_apply_button()
 
     def has_unsaved_changes(self) -> bool:
         return (self._saved_format_values is not None
                 and asdict(self.current_values()) != self._saved_format_values)
+
+    def update_apply_button(self) -> None:
+        self.apply_button.setEnabled(self.selected_format_name != self.active_format_name)
 
     def update_active_format_marker(self) -> None:
         marker = QPixmap(16, 16)
@@ -1282,6 +1291,7 @@ class FormatSettingsDialog(QDialog):
             messages.append(f"Hauteur dépassée de {-bottom_space:.1f} mm")
         self.geometry_feedback.setText(" | ".join(messages))
         self.geometry_feedback.setVisible(bool(messages))
+        self.save_button.setEnabled(self.has_unsaved_changes())
 
     def open_position_editor(self) -> None:
         dialog = PositionEditorDialog(
@@ -1348,6 +1358,8 @@ class FormatSettingsDialog(QDialog):
         if self.pending_new_name == original_name:
             self.pending_new_name = None
         self._saved_format_values = asdict(label_format)
+        self.save_button.setEnabled(False)
+        self.update_apply_button()
         self.save_feedback.setText(f"✓ Format enregistré : {label_format.name}")
         self.save_feedback.adjustSize()
         self.save_feedback.move(
@@ -1378,6 +1390,10 @@ class FormatSettingsDialog(QDialog):
         )
         if decision != QMessageBox.StandardButton.Yes:
             return
+        row = self.preset_list.row(item)
+        was_active = name == self.active_format_name
+        replacement_item = (self.preset_list.item(row - 1) if row > 0
+                            else self.preset_list.item(row + 1))
         self.formats.pop(name, None)
         try:
             save_formats(self.storage_path, self.formats)
@@ -1385,6 +1401,14 @@ class FormatSettingsDialog(QDialog):
             QMessageBox.warning(self, "Suppression impossible", str(error))
             return
         self.preset_list.takeItem(self.preset_list.row(item))
+        if was_active and replacement_item is not None:
+            replacement_name = replacement_item.data(self.FORMAT_NAME_ROLE)
+            self.preset_list.setCurrentItem(replacement_item)
+            self.active_format_name = replacement_name
+            self.update_active_format_marker()
+            if self.format_saved_callback is not None:
+                self.format_saved_callback(self.current_values())
+            self.update_apply_button()
 
     def format_result(self) -> LabelFormat:
         return self.current_values()
